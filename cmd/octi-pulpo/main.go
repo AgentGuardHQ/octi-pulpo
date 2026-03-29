@@ -66,6 +66,25 @@ func main() {
 	if httpPort != "" {
 		secretFile := os.Getenv("AGENTGUARD_WEBHOOK_SECRET_FILE")
 		ws := dispatch.NewWebhookServer(dispatcher, secretFile)
+
+		// Daemon mode: if OCTI_DAEMON=1 or stdin is not a terminal, run HTTP only (no MCP stdio)
+		daemon := os.Getenv("OCTI_DAEMON") == "1"
+		if !daemon {
+			if fi, err := os.Stdin.Stat(); err == nil {
+				daemon = fi.Mode()&os.ModeCharDevice == 0 && fi.Size() == 0
+			}
+		}
+
+		if daemon {
+			addr := ":" + httpPort
+			fmt.Fprintf(os.Stderr, "octi-pulpo daemon: webhook server on %s, redis %s\n", addr, redisURL)
+			if err := ws.ListenAndServe(addr); err != nil {
+				fmt.Fprintf(os.Stderr, "webhook server: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+
 		go func() {
 			addr := ":" + httpPort
 			fmt.Fprintf(os.Stderr, "webhook server listening on %s\n", addr)
