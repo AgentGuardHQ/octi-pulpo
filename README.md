@@ -1,11 +1,10 @@
 <p align="center">
-  <img src="https://em-content.zobj.net/source/apple/391/octopus_1f419.png" alt="Octi Pulpo" width="120">
+  <img src="docs/assets/logo.png" alt="Octi Pulpo" width="360">
 </p>
 
-<h1 align="center">Octi Pulpo</h1>
-
-<p align="center"><strong>Eight arms. One brain.</strong><br>
-Swarm coordination layer for autonomous agent fleets.</p>
+<p align="center">
+Swarm coordination layer for autonomous agent fleets.
+</p>
 
 <p align="center">
   <a href="https://github.com/AgentGuardHQ/octi-pulpo"><img src="https://img.shields.io/badge/Status-Alpha-orange" alt="Alpha"></a>
