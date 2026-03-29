@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/AgentGuardHQ/octi-pulpo/internal/coordination"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/dispatch"
@@ -237,7 +238,8 @@ func (s *Server) handleToolCall(req Request) Response {
 
 	case "health_report":
 		report := s.router.HealthReport()
-		data, _ := json.Marshal(report)
+		enriched := enrichHealthReport(report)
+		data, _ := json.Marshal(enriched)
 		return textResult(req.ID, string(data))
 
 	case "dispatch_event":
@@ -355,6 +357,54 @@ func (s *Server) handleToolCall(req Request) Response {
 	}
 }
 
+// EnrichedHealthEntry extends DriverHealth with derived observability fields.
+type EnrichedHealthEntry struct {
+	Name               string `json:"name"`
+	CircuitState       string `json:"circuit_state"`
+	Failures           int    `json:"failures"`
+	LastFailure        string `json:"last_failure,omitempty"`
+	LastSuccess        string `json:"last_success,omitempty"`
+	SecsSinceSuccess   int64  `json:"secs_since_last_success,omitempty"`
+	Recommendation     string `json:"recommendation"`
+}
+
+// enrichHealthReport adds derived fields to each DriverHealth entry.
+func enrichHealthReport(drivers []routing.DriverHealth) []EnrichedHealthEntry {
+	now := time.Now().UTC()
+	entries := make([]EnrichedHealthEntry, 0, len(drivers))
+	for _, d := range drivers {
+		e := EnrichedHealthEntry{
+			Name:         d.Name,
+			CircuitState: d.CircuitState,
+			Failures:     d.Failures,
+			LastFailure:  d.LastFailure,
+			LastSuccess:  d.LastSuccess,
+		}
+
+		if d.LastSuccess != "" {
+			if t, err := time.Parse(time.RFC3339, d.LastSuccess); err == nil {
+				e.SecsSinceSuccess = int64(now.Sub(t).Seconds())
+			}
+		}
+
+		switch d.CircuitState {
+		case "OPEN":
+			e.Recommendation = fmt.Sprintf("%s: budget exhausted or unreachable — check quota and reset circuit", d.Name)
+		case "HALF":
+			e.Recommendation = fmt.Sprintf("%s: recovering — use with caution, monitor next run", d.Name)
+		default:
+			if e.SecsSinceSuccess > 3600 {
+				e.Recommendation = fmt.Sprintf("%s: healthy but no success in %dh — verify driver is reachable", d.Name, e.SecsSinceSuccess/3600)
+			} else {
+				e.Recommendation = fmt.Sprintf("%s: healthy", d.Name)
+			}
+		}
+
+		entries = append(entries, e)
+	}
+	return entries
+}
+
 func textResult(id interface{}, text string) Response {
 	return Response{
 		JSONRPC: "2.0",
@@ -441,7 +491,7 @@ func toolDefs() []ToolDef {
 		},
 		{
 			Name:        "health_report",
-			Description: "Get current health status of all drivers in the swarm — circuit breaker state, failure counts, last success/failure timestamps.",
+			Description: "Get current health status of all drivers in the swarm — circuit breaker state, failure counts, last success/failure timestamps, time since last success, and recommended actions per driver.",
 			InputSchema: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},

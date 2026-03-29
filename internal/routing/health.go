@@ -2,9 +2,11 @@ package routing
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // HealthFile is the on-disk format of a driver health JSON file.
@@ -74,4 +76,98 @@ func ReadAllHealth(healthDir string) []DriverHealth {
 		results = append(results, ReadDriverHealth(healthDir, d))
 	}
 	return results
+}
+
+// WriteHealthFile atomically writes a driver health file to disk.
+// Creates the directory if it does not exist.
+func WriteHealthFile(healthDir, driver string, hf HealthFile) error {
+	if err := os.MkdirAll(healthDir, 0755); err != nil {
+		return fmt.Errorf("mkdir health dir: %w", err)
+	}
+	path := filepath.Join(healthDir, driver+".json")
+	data, err := json.Marshal(hf)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// OpenCircuit marks a driver's circuit breaker as OPEN (exhausted/unreachable).
+// Preserves existing failure count and last-success timestamp.
+func OpenCircuit(healthDir, driver string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	existing := ReadDriverHealth(healthDir, driver)
+	hf := HealthFile{
+		State:       "OPEN",
+		Failures:    existing.Failures + 1,
+		LastFailure: now,
+		LastSuccess: existing.LastSuccess,
+		OpenedAt:    now,
+		Updated:     now,
+	}
+	return WriteHealthFile(healthDir, driver, hf)
+}
+
+// CloseCircuit marks a driver's circuit breaker as CLOSED (healthy).
+// Records a new last-success timestamp.
+func CloseCircuit(healthDir, driver string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	existing := ReadDriverHealth(healthDir, driver)
+	hf := HealthFile{
+		State:       "CLOSED",
+		Failures:    existing.Failures,
+		LastFailure: existing.LastFailure,
+		LastSuccess: now,
+		ProbedAt:    now,
+		Updated:     now,
+	}
+	return WriteHealthFile(healthDir, driver, hf)
+}
+
+// creditErrorPatterns are substrings (case-insensitive) that indicate a driver
+// has exhausted its budget or been rate-limited.
+var creditErrorPatterns = []string{
+	"credit balance is too low",
+	"no quota",
+	"quota exceeded",
+	"insufficient_quota",
+	"exceeded your current quota",
+	"you have exceeded",
+	"rate limit exceeded",
+	"429 too many requests",
+	"rateLimitError",
+}
+
+// driverCreditKeywords maps specific error substrings to driver names.
+// More specific patterns must come first.
+var driverCreditKeywords = []struct {
+	keyword string
+	driver  string
+}{
+	{"claude.ai", "claude-code"},
+	{"credit balance", "claude-code"},
+	{"anthropic", "claude-code"},
+	{"github.com/copilot", "copilot"},
+	{"copilot", "copilot"},
+	{"openai.com", "codex"},
+	{"google.com/generativeai", "gemini"},
+	{"google generative", "gemini"},
+}
+
+// DetectExhaustedDriver scans agent output for known credit/quota error patterns.
+// Returns the inferred driver name and true when a budget exhaustion error is found.
+// Returns ("unknown", true) when an error is found but the driver cannot be identified.
+func DetectExhaustedDriver(output string) (string, bool) {
+	lower := strings.ToLower(output)
+	for _, pattern := range creditErrorPatterns {
+		if strings.Contains(lower, strings.ToLower(pattern)) {
+			for _, kw := range driverCreditKeywords {
+				if strings.Contains(lower, strings.ToLower(kw.keyword)) {
+					return kw.driver, true
+				}
+			}
+			return "unknown", true
+		}
+	}
+	return "", false
 }
