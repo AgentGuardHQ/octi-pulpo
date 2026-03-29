@@ -25,14 +25,31 @@ var driverTiers = map[string]CostTier{
 	// Local ($0)
 	"ollama":   TierLocal,
 	"nemotron": TierLocal,
-	// Subscription (browser-based)
+	// Subscription (browser-based, already paying)
 	"openclaw": TierSubscription,
-	// CLI (metered)
+	// CLI (metered subscription)
 	"claude-code": TierCLI,
 	"copilot":     TierCLI,
 	"codex":       TierCLI,
 	"gemini":      TierCLI,
 	"goose":       TierCLI,
+	// API (per-token, burst capacity)
+	"claude-api":  TierAPI,
+	"openai-api":  TierAPI,
+	"gemini-api":  TierAPI,
+}
+
+// taskAffinityTiers maps task-type keywords to a minimum cost tier.
+// The router will not route below this tier for matching task types, since
+// those models may lack the capability required for the task.
+var taskAffinityTiers = []struct {
+	keywords []string
+	minTier  CostTier
+}{
+	{[]string{"code", "review", "pull-request", "commit", "implement", "debug", "refactor", "test"}, TierCLI},
+	{[]string{"browse", "web", "click", "screenshot", "briefing", "artifact", "document"}, TierSubscription},
+	{[]string{"burst", "programmatic", "api-call"}, TierAPI},
+	// "simple", "classify", "triage" etc. get no override → defaults to TierLocal
 }
 
 // DriverHealth represents the runtime health of a single driver.
@@ -57,6 +74,7 @@ type RouteDecision struct {
 // Router makes budget-aware driver routing decisions.
 type Router struct {
 	healthDir string
+	tiers     map[string]CostTier // driver → cost tier; defaults to global driverTiers
 }
 
 // NewRouter creates a Router that reads driver health from the given directory.
@@ -66,37 +84,60 @@ func NewRouter(healthDir string) *Router {
 		home, _ := os.UserHomeDir()
 		healthDir = filepath.Join(home, ".agentguard", "driver-health")
 	}
-	return &Router{healthDir: healthDir}
+	return &Router{healthDir: healthDir, tiers: driverTiers}
+}
+
+// NewRouterWithTiers creates a Router with an explicit driver→tier map.
+// Intended for testing; production code should use NewRouter.
+func NewRouterWithTiers(healthDir string, tiers map[string]CostTier) *Router {
+	return &Router{healthDir: healthDir, tiers: tiers}
 }
 
 // Recommend returns the cheapest healthy driver for the given task.
-// The budget parameter controls which cost tiers are considered:
+//
+// taskType influences the minimum tier considered: coding/review tasks won't
+// be routed to local models that lack the required capability. Use an empty
+// string for no preference (starts from the cheapest local tier).
+//
+// budget controls the maximum tier:
 //   - "low"    -> local only
 //   - "medium" -> local + subscription + cli
-//   - "high"   -> all tiers
-//   - ""       -> all tiers (default)
+//   - "high"   -> all tiers (default)
+//   - ""       -> all tiers
 func (r *Router) Recommend(taskType, budget string) RouteDecision {
+	minTier := taskMinTier(taskType)
 	maxTier := maxTierForBudget(budget)
-	drivers := DiscoverDrivers(r.healthDir)
 
-	// Build health map from discovered drivers.
-	// Only drivers with health files on disk are candidates.
-	healthMap := make(map[string]DriverHealth)
-	for _, d := range drivers {
-		healthMap[d] = ReadDriverHealth(r.healthDir, d)
+	// If the task requires a tier above what the budget allows, skip immediately
+	// rather than routing to an incapable model.
+	if tierIndex(minTier) > tierIndex(maxTier) {
+		return RouteDecision{
+			Skip:   true,
+			Reason: fmt.Sprintf("task requires %s tier but budget caps at %s", minTier, maxTier),
+		}
+	}
+
+	// Collect health for all registered drivers (not just those with health
+	// files on disk). A missing health file defaults to CLOSED (healthy).
+	healthMap := make(map[string]DriverHealth, len(r.tiers))
+	for name := range r.tiers {
+		healthMap[name] = ReadDriverHealth(r.healthDir, name)
 	}
 
 	var chosen *RouteDecision
 	var fallbacks []string
 
-	// Walk tiers in cost order: cheapest first.
+	// Walk tiers in cost order, within [minTier, maxTier].
 	for _, tier := range tierOrder {
-		if tierIndex(tier) > tierIndex(maxTier) {
-			break
+		idx := tierIndex(tier)
+		if idx < tierIndex(minTier) {
+			continue // below minimum capability for this task type
+		}
+		if idx > tierIndex(maxTier) {
+			break // above budget cap
 		}
 		for name, health := range healthMap {
-			driverTier := tierFor(name)
-			if driverTier != tier {
+			if r.tierFor(name) != tier {
 				continue
 			}
 			if health.CircuitState == "OPEN" {
@@ -113,7 +154,7 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 					Driver:     name,
 					Tier:       string(tier),
 					Confidence: confidence,
-					Reason:     fmt.Sprintf("cheapest healthy driver (tier: %s, state: %s)", tier, health.CircuitState),
+					Reason:     fmt.Sprintf("cheapest capable driver for %q (tier: %s, state: %s)", taskType, tier, health.CircuitState),
 				}
 			} else {
 				fallbacks = append(fallbacks, name)
@@ -124,7 +165,7 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 	if chosen == nil {
 		return RouteDecision{
 			Skip:   true,
-			Reason: "all drivers exhausted — circuit breakers OPEN",
+			Reason: fmt.Sprintf("all drivers exhausted for %q (tiers: %s–%s)", taskType, minTier, maxTier),
 		}
 	}
 
@@ -135,6 +176,21 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 // HealthReport returns current health status for all discovered drivers.
 func (r *Router) HealthReport() []DriverHealth {
 	return ReadAllHealth(r.healthDir)
+}
+
+// taskMinTier returns the minimum cost tier capable of handling the task type.
+// Keyword matching is case-insensitive. If no affinity matches, TierLocal is
+// returned so the cheapest possible driver is tried first.
+func taskMinTier(taskType string) CostTier {
+	lower := strings.ToLower(taskType)
+	for _, entry := range taskAffinityTiers {
+		for _, kw := range entry.keywords {
+			if strings.Contains(lower, kw) {
+				return entry.minTier
+			}
+		}
+	}
+	return TierLocal
 }
 
 // maxTierForBudget returns the highest tier to consider for a budget level.
@@ -152,8 +208,8 @@ func maxTierForBudget(budget string) CostTier {
 }
 
 // tierFor returns the cost tier for a driver, defaulting to CLI.
-func tierFor(driver string) CostTier {
-	if t, ok := driverTiers[driver]; ok {
+func (r *Router) tierFor(driver string) CostTier {
+	if t, ok := r.tiers[driver]; ok {
 		return t
 	}
 	return TierCLI // unknown drivers default to CLI tier

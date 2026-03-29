@@ -50,7 +50,9 @@ func testSetup(t *testing.T) (*Dispatcher, context.Context) {
 		rdb.Close()
 	})
 
-	// Create a health directory with a healthy driver
+	// Create a health directory with a healthy driver.
+	// Use NewRouterWithTiers so only the explicitly registered drivers are
+	// candidates — prevents global driverTiers entries from leaking in.
 	healthDir := t.TempDir()
 	writeHealthFile(t, healthDir, "claude-code", "CLOSED")
 
@@ -60,7 +62,7 @@ func testSetup(t *testing.T) (*Dispatcher, context.Context) {
 	}
 	t.Cleanup(func() { coord.Close() })
 
-	router := routing.NewRouter(healthDir)
+	router := routing.NewRouterWithTiers(healthDir, map[string]routing.CostTier{"claude-code": routing.TierCLI})
 	eventRouter := NewEventRouter(DefaultRules())
 
 	queueFile := filepath.Join(t.TempDir(), "queue.txt")
@@ -181,7 +183,10 @@ func TestDispatch_DriversExhausted_QueuesForLater(t *testing.T) {
 	coord, _ := coordination.New(redisURL, ns)
 	t.Cleanup(func() { coord.Close() })
 
-	router := routing.NewRouter(healthDir)
+	router := routing.NewRouterWithTiers(healthDir, map[string]routing.CostTier{
+		"claude-code": routing.TierCLI,
+		"copilot":     routing.TierCLI,
+	})
 	eventRouter := NewEventRouter(DefaultRules())
 	d := NewDispatcher(rdb, router, coord, eventRouter, "", ns)
 
