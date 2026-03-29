@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/AgentGuardHQ/octi-pulpo/internal/sprint"
@@ -36,23 +37,29 @@ type LeverageAction struct {
 //   - Queue health: alert on growing queue depth
 //   - Constraint analysis: identify the ONE bottleneck and focus on it
 //   - Sprint store sync: periodically refresh issue data from GitHub
+//   - Slack notifications: periodic budget dashboard + driver state change alerts
 type Brain struct {
-	dispatcher   *Dispatcher
-	chains       ChainConfig
-	tickInterval time.Duration
-	log          *log.Logger
-	sprintStore  *sprint.Store
-	profiles     *ProfileStore
-	lastSync     time.Time
+	dispatcher      *Dispatcher
+	chains          ChainConfig
+	tickInterval    time.Duration
+	log             *log.Logger
+	sprintStore     *sprint.Store
+	profiles        *ProfileStore
+	notifier        *Notifier
+	lastSync        time.Time
+	lastDashboard   time.Time
+	dashboardPeriod time.Duration
+	driversWereDown bool // tracks transition for edge-triggered alerts
 }
 
 // NewBrain creates a dispatch brain.
 func NewBrain(dispatcher *Dispatcher, chains ChainConfig) *Brain {
 	return &Brain{
-		dispatcher:   dispatcher,
-		chains:       chains,
-		tickInterval: 60 * time.Second,
-		log:          log.New(os.Stderr, "brain: ", log.LstdFlags),
+		dispatcher:      dispatcher,
+		chains:          chains,
+		tickInterval:    60 * time.Second,
+		dashboardPeriod: 4 * time.Hour,
+		log:             log.New(os.Stderr, "brain: ", log.LstdFlags),
 	}
 }
 
@@ -64,6 +71,11 @@ func (b *Brain) SetSprintStore(s *sprint.Store) {
 // SetProfileStore enables adaptive-cooldown-aware constraint analysis.
 func (b *Brain) SetProfileStore(ps *ProfileStore) {
 	b.profiles = ps
+}
+
+// SetNotifier enables Slack notifications for driver state changes and periodic dashboards.
+func (b *Brain) SetNotifier(n *Notifier) {
+	b.notifier = n
 }
 
 // Run starts the brain evaluation loop. Blocks until context is cancelled.
@@ -97,9 +109,13 @@ func (b *Brain) Tick(ctx context.Context) {
 	b.checkQueueHealth(ctx)
 	b.checkStalledDispatches(ctx)
 
-	// 3. Constraint-driven dispatch (if sprint store is available)
+	// 3. Periodic Slack dashboard
+	b.maybePostDashboard(ctx)
+
+	// 4. Constraint-driven dispatch (if sprint store is available)
 	if b.sprintStore != nil {
 		constraint := b.identifyConstraint(ctx)
+		b.maybeNotifyConstraintChange(ctx, constraint)
 		if constraint.Type != "none" && constraint.Type != "all_drivers_down" {
 			action := b.highestLeverageAction(ctx, constraint)
 			if action != nil {
@@ -127,6 +143,52 @@ func (b *Brain) maybeSyncSprint(ctx context.Context) {
 		}
 	}
 	b.lastSync = time.Now()
+}
+
+// maybePostDashboard posts a Slack budget dashboard at most once per dashboardPeriod.
+// It reads live driver health and cumulative worker counters from Redis.
+func (b *Brain) maybePostDashboard(ctx context.Context) {
+	if b.notifier == nil || !b.notifier.Enabled() {
+		return
+	}
+	if time.Since(b.lastDashboard) < b.dashboardPeriod {
+		return
+	}
+
+	drivers := b.dispatcher.router.AllHealth()
+	rdb := b.dispatcher.RedisClient()
+	ns := b.dispatcher.Namespace()
+
+	okStr, _ := rdb.Get(ctx, ns+":worker-ok").Result()
+	failStr, _ := rdb.Get(ctx, ns+":worker-fail").Result()
+	ok, _ := strconv.ParseInt(okStr, 10, 64)
+	fail, _ := strconv.ParseInt(failStr, 10, 64)
+
+	if err := b.notifier.PostBudgetDashboard(ctx, drivers, ok, fail); err != nil {
+		b.log.Printf("slack dashboard: %v", err)
+		return
+	}
+	b.lastDashboard = time.Now()
+}
+
+// maybeNotifyConstraintChange fires edge-triggered Slack alerts when driver
+// availability transitions between healthy and all-exhausted states.
+func (b *Brain) maybeNotifyConstraintChange(ctx context.Context, constraint Constraint) {
+	if b.notifier == nil || !b.notifier.Enabled() {
+		return
+	}
+	nowDown := constraint.Type == "all_drivers_down"
+	if nowDown && !b.driversWereDown {
+		b.driversWereDown = true
+		if err := b.notifier.PostDriversDown(ctx, constraint.Description); err != nil {
+			b.log.Printf("slack drivers-down: %v", err)
+		}
+	} else if !nowDown && b.driversWereDown {
+		b.driversWereDown = false
+		if err := b.notifier.PostDriversRecovered(ctx); err != nil {
+			b.log.Printf("slack drivers-recovered: %v", err)
+		}
+	}
 }
 
 // identifyConstraint reads system state and returns the single most important constraint.

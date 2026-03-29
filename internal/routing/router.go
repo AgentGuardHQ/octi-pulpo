@@ -93,6 +93,11 @@ func NewRouterWithTiers(healthDir string, tiers map[string]CostTier) *Router {
 	return &Router{healthDir: healthDir, tiers: tiers}
 }
 
+// AllHealth returns health status for all discovered drivers in the health directory.
+func (r *Router) AllHealth() []DriverHealth {
+	return ReadAllHealth(r.healthDir)
+}
+
 // Recommend returns the cheapest healthy driver for the given task.
 //
 // taskType influences the minimum tier considered: coding/review tasks won't
