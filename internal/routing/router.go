@@ -22,17 +22,61 @@ var tierOrder = []CostTier{TierLocal, TierSubscription, TierCLI, TierAPI}
 
 // driverTiers maps each known driver to its cost tier.
 var driverTiers = map[string]CostTier{
-	// Local ($0)
+	// Local ($0) — Ollama-served models, NemoClaw runtime
 	"ollama":   TierLocal,
 	"nemotron": TierLocal,
-	// Subscription (browser-based)
-	"openclaw": TierSubscription,
-	// CLI (metered)
+	// Subscription (already-paying browser sessions via OpenClaw)
+	"openclaw":   TierSubscription,
+	"chatgpt":    TierSubscription,
+	"notebooklm": TierSubscription,
+	"gemini-app": TierSubscription,
+	// CLI (metered CLI tools, effectively already-paying)
 	"claude-code": TierCLI,
 	"copilot":     TierCLI,
 	"codex":       TierCLI,
 	"gemini":      TierCLI,
 	"goose":       TierCLI,
+	// API (per-token, burst capacity)
+	"anthropic-api": TierAPI,
+	"openai-api":    TierAPI,
+	"gemini-api":    TierAPI,
+}
+
+// taskTypeMinTier maps task-type keywords to the minimum appropriate cost tier.
+// Routing won't start below this tier for a matched task type.
+// Uses substring matching against the lowercase task description.
+var taskTypeMinTier = map[string]CostTier{
+	// Coding tasks require a capable agent with code execution tools (CLI+)
+	"code-review":    TierCLI,
+	"coding":         TierCLI,
+	"commit":         TierCLI,
+	"refactor":       TierCLI,
+	"debug":          TierCLI,
+	"implementation": TierCLI,
+	"pull-request":   TierCLI,
+	// Artifact / document tasks benefit from web-connected subscription models
+	"artifact":  TierSubscription,
+	"briefing":  TierSubscription,
+	"document":  TierSubscription,
+	"notebook":  TierSubscription,
+	"report":    TierSubscription,
+	// Burst / batch workloads require direct API access
+	"burst": TierAPI,
+	"batch": TierAPI,
+}
+
+// minTierForTaskType returns the minimum appropriate cost tier for a task type.
+// Scans the task description for known keywords and returns the highest
+// (most expensive) minimum tier found. Defaults to TierLocal if no keyword matches.
+func minTierForTaskType(taskType string) CostTier {
+	lower := strings.ToLower(taskType)
+	best := TierLocal
+	for keyword, tier := range taskTypeMinTier {
+		if strings.Contains(lower, keyword) && tierIndex(tier) > tierIndex(best) {
+			best = tier
+		}
+	}
+	return best
 }
 
 // DriverHealth represents the runtime health of a single driver.
@@ -70,13 +114,32 @@ func NewRouter(healthDir string) *Router {
 }
 
 // Recommend returns the cheapest healthy driver for the given task.
-// The budget parameter controls which cost tiers are considered:
+//
+// Two constraints bound the tier cascade:
+//   - minTier: derived from taskType — coding tasks require CLI+, briefings require Subscription+
+//   - maxTier: derived from budget — "low" caps at local, "medium" caps at cli, "high" allows all
+//
+// If taskType requires a higher tier than budget allows, Skip is returned immediately
+// with a reason describing the conflict. Otherwise the cascade walks from minTier to
+// maxTier and returns the first healthy driver found.
+//
+// Budget values:
 //   - "low"    -> local only
 //   - "medium" -> local + subscription + cli
 //   - "high"   -> all tiers
 //   - ""       -> all tiers (default)
 func (r *Router) Recommend(taskType, budget string) RouteDecision {
 	maxTier := maxTierForBudget(budget)
+	minTier := minTierForTaskType(taskType)
+
+	// Budget conflict: task capability requirement exceeds budget ceiling.
+	if tierIndex(minTier) > tierIndex(maxTier) {
+		return RouteDecision{
+			Skip:   true,
+			Reason: fmt.Sprintf("task %q requires %s tier but budget only allows up to %s", taskType, minTier, maxTier),
+		}
+	}
+
 	drivers := DiscoverDrivers(r.healthDir)
 
 	// Build health map from discovered drivers.
@@ -89,14 +152,16 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 	var chosen *RouteDecision
 	var fallbacks []string
 
-	// Walk tiers in cost order: cheapest first.
+	// Walk tiers in cost order from minTier to maxTier.
 	for _, tier := range tierOrder {
+		if tierIndex(tier) < tierIndex(minTier) {
+			continue // skip tiers below task's capability minimum
+		}
 		if tierIndex(tier) > tierIndex(maxTier) {
 			break
 		}
 		for name, health := range healthMap {
-			driverTier := tierFor(name)
-			if driverTier != tier {
+			if tierFor(name) != tier {
 				continue
 			}
 			if health.CircuitState == "OPEN" {
