@@ -22,17 +22,54 @@ var tierOrder = []CostTier{TierLocal, TierSubscription, TierCLI, TierAPI}
 
 // driverTiers maps each known driver to its cost tier.
 var driverTiers = map[string]CostTier{
-	// Local ($0)
-	"ollama":   TierLocal,
-	"nemotron": TierLocal,
-	// Subscription (browser-based)
-	"openclaw": TierSubscription,
-	// CLI (metered)
+	// Local ($0) — Ollama and NemoClaw/Nemotron
+	"ollama":    TierLocal,
+	"nemotron":  TierLocal,
+	"nemoclaw":  TierLocal,
+	// Subscription — OpenClaw browser runtime driving web apps
+	"openclaw":    TierSubscription,
+	"chatgpt":     TierSubscription, // OpenClaw → ChatGPT web
+	"notebooklm":  TierSubscription, // OpenClaw → NotebookLM
+	"gemini-app":  TierSubscription, // OpenClaw → Gemini web app
+	// CLI — metered tools running locally
 	"claude-code": TierCLI,
 	"copilot":     TierCLI,
 	"codex":       TierCLI,
-	"gemini":      TierCLI,
+	"gemini":      TierCLI, // Gemini CLI
 	"goose":       TierCLI,
+	// API — direct per-token calls, burst capacity
+	"anthropic-api": TierAPI,
+	"openai-api":    TierAPI,
+	"gemini-api":    TierAPI,
+}
+
+// taskTypeMinTier maps task type keywords to the minimum capable tier.
+// Tasks requiring strong reasoning or code generation should not be routed
+// to local models that may lack the capability.
+var taskTypeMinTier = map[string]CostTier{
+	// Local-capable: triage, classification, simple summarization
+	"triage":   TierLocal,
+	"classify": TierLocal,
+	"simple":   TierLocal,
+	"label":    TierLocal,
+	// Subscription-capable: briefings, artifacts, research reports
+	"briefing":  TierSubscription,
+	"artifact":  TierSubscription,
+	"report":    TierSubscription,
+	"research":  TierSubscription,
+	"summarize": TierSubscription,
+	// CLI-capable: code generation, PRs, commits, reviews
+	"code":         TierCLI,
+	"code-review":  TierCLI,
+	"pr":           TierCLI,
+	"commit":       TierCLI,
+	"review":       TierCLI,
+	"refactor":     TierCLI,
+	"test":         TierCLI,
+	"debug":        TierCLI,
+	// API-only: burst/programmatic access
+	"burst": TierAPI,
+	"api":   TierAPI,
 }
 
 // DriverHealth represents the runtime health of a single driver.
@@ -69,14 +106,20 @@ func NewRouter(healthDir string) *Router {
 	return &Router{healthDir: healthDir}
 }
 
-// Recommend returns the cheapest healthy driver for the given task.
-// The budget parameter controls which cost tiers are considered:
+// Recommend returns the cheapest capable healthy driver for the given task.
+//
+// The budget parameter controls the maximum cost tier:
 //   - "low"    -> local only
 //   - "medium" -> local + subscription + cli
-//   - "high"   -> all tiers
-//   - ""       -> all tiers (default)
+//   - "high"   -> all tiers (default)
+//
+// The taskType parameter sets the minimum capable tier — routing will not
+// go below it even if cheaper drivers are available. For example, "code-review"
+// requires at least a CLI-tier driver; routing to local is skipped.
+// If taskType is empty or unrecognized, routing starts from the cheapest tier.
 func (r *Router) Recommend(taskType, budget string) RouteDecision {
 	maxTier := maxTierForBudget(budget)
+	minTier := minTierForTask(taskType)
 	drivers := DiscoverDrivers(r.healthDir)
 
 	// Build health map from discovered drivers.
@@ -89,14 +132,16 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 	var chosen *RouteDecision
 	var fallbacks []string
 
-	// Walk tiers in cost order: cheapest first.
+	// Walk tiers in cost order: cheapest capable first.
 	for _, tier := range tierOrder {
+		if tierIndex(tier) < tierIndex(minTier) {
+			continue // below task capability floor
+		}
 		if tierIndex(tier) > tierIndex(maxTier) {
-			break
+			break // above budget ceiling
 		}
 		for name, health := range healthMap {
-			driverTier := tierFor(name)
-			if driverTier != tier {
+			if tierFor(name) != tier {
 				continue
 			}
 			if health.CircuitState == "OPEN" {
@@ -109,11 +154,15 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 			}
 
 			if chosen == nil {
+				reason := fmt.Sprintf("cheapest capable driver (tier: %s, state: %s)", tier, health.CircuitState)
+				if taskType != "" {
+					reason = fmt.Sprintf("cheapest capable driver for %q (tier: %s, state: %s)", taskType, tier, health.CircuitState)
+				}
 				chosen = &RouteDecision{
 					Driver:     name,
 					Tier:       string(tier),
 					Confidence: confidence,
-					Reason:     fmt.Sprintf("cheapest healthy driver (tier: %s, state: %s)", tier, health.CircuitState),
+					Reason:     reason,
 				}
 			} else {
 				fallbacks = append(fallbacks, name)
@@ -122,9 +171,13 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 	}
 
 	if chosen == nil {
+		reason := "all drivers exhausted — circuit breakers OPEN"
+		if taskType != "" && minTier != TierLocal {
+			reason = fmt.Sprintf("all capable drivers for %q exhausted (min tier: %s)", taskType, minTier)
+		}
 		return RouteDecision{
 			Skip:   true,
-			Reason: "all drivers exhausted — circuit breakers OPEN",
+			Reason: reason,
 		}
 	}
 
@@ -149,6 +202,15 @@ func maxTierForBudget(budget string) CostTier {
 	default:
 		return TierAPI
 	}
+}
+
+// minTierForTask returns the minimum capable tier for a task type.
+// Unrecognized task types default to TierLocal (no floor — cheapest wins).
+func minTierForTask(taskType string) CostTier {
+	if t, ok := taskTypeMinTier[strings.ToLower(taskType)]; ok {
+		return t
+	}
+	return TierLocal
 }
 
 // tierFor returns the cost tier for a driver, defaulting to CLI.
