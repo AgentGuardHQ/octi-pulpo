@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AgentGuardHQ/octi-pulpo/internal/crosssquad"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/routing"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/sprint"
 )
@@ -51,6 +52,7 @@ type Brain struct {
 	sprintStore     *sprint.Store
 	profiles        *ProfileStore
 	notifier        *Notifier
+	crossSquad      *crosssquad.Store
 	lastSync        time.Time
 	lastProbe       time.Time
 	lastDashboard   time.Time
@@ -83,6 +85,11 @@ func (b *Brain) SetProfileStore(ps *ProfileStore) {
 // SetNotifier enables Slack notifications for driver state changes and periodic dashboards.
 func (b *Brain) SetNotifier(n *Notifier) {
 	b.notifier = n
+}
+
+// SetCrossSquadStore enables cross-squad request dispatch in the brain.
+func (b *Brain) SetCrossSquadStore(cs *crosssquad.Store) {
+	b.crossSquad = cs
 }
 
 // Run starts the brain evaluation loop. Blocks until context is cancelled.
@@ -122,7 +129,10 @@ func (b *Brain) Tick(ctx context.Context) {
 	// 4. Periodic Slack dashboard
 	b.maybePostDashboard(ctx)
 
-	// 5. Constraint-driven dispatch (if sprint store is available)
+	// 5. Cross-squad requests — dispatch target squad SRs for pending requests
+	b.checkCrossSquadRequests(ctx)
+
+	// 6. Constraint-driven dispatch (if sprint store is available)
 	if b.sprintStore != nil {
 		constraint := b.identifyConstraint(ctx)
 		b.maybeNotifyConstraintChange(ctx, constraint)
@@ -632,6 +642,60 @@ func (b *Brain) checkStalledDispatches(ctx context.Context) {
 
 	if recentFailures > 5 {
 		b.log.Printf("WARNING: %d/%d recent worker results are failures — possible systemic issue", recentFailures, len(raw))
+	}
+}
+
+// checkCrossSquadRequests dispatches each target squad's SR agent when there are
+// pending cross-squad requests. This ensures inter-squad work gets picked up without
+// requiring a human or a timer to notice.
+func (b *Brain) checkCrossSquadRequests(ctx context.Context) {
+	if b.crossSquad == nil {
+		return
+	}
+
+	squads, err := b.crossSquad.PendingSquads(ctx)
+	if err != nil {
+		b.log.Printf("cross-squad pending squads: %v", err)
+		return
+	}
+	if len(squads) == 0 {
+		return
+	}
+
+	for _, squad := range squads {
+		requests, err := b.crossSquad.ForSquad(ctx, squad)
+		if err != nil || len(requests) == 0 {
+			continue
+		}
+		top := requests[0] // highest-priority request (sorted set order)
+
+		agent := b.srForSquad(squad)
+		if agent == "" {
+			b.log.Printf("cross-squad: no SR agent mapped for squad %q — skipping", squad)
+			continue
+		}
+
+		event := Event{
+			Type:   EventType("cross-squad.request"),
+			Source: "brain",
+			Payload: map[string]string{
+				"request_id":  top.ID,
+				"from_agent":  top.FromAgent,
+				"to_squad":    squad,
+				"type":        string(top.Type),
+				"description": top.Description,
+				"priority":    fmt.Sprintf("%d", top.Priority),
+			},
+			Priority: top.Priority,
+		}
+
+		result, err := b.dispatcher.Dispatch(ctx, event, agent, top.Priority)
+		if err != nil {
+			b.log.Printf("cross-squad dispatch %s for squad %s: %v", agent, squad, err)
+			continue
+		}
+		b.log.Printf("cross-squad: dispatched %s for squad %s request %s -> %s",
+			agent, squad, top.ID, result.Action)
 	}
 }
 
