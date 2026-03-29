@@ -67,7 +67,8 @@ octi-pulpo start
 
 ## Stack
 
-- **Redis** — Hot state: assignments, locks, heartbeats, cycle coordination
+- **Redis** — Hot state: assignments, locks, heartbeats, cycle coordination, pub/sub signals
+- **Dagu** — Workflow orchestration for multi-agent dependency chains (Arm 5)
 - **Vector DB** (Qdrant) — Cold knowledge: learnings, patterns, cross-cycle memory
 - **MCP Server** — Tool interface for all agent runtimes
 - **TypeScript** — Core coordination engine
