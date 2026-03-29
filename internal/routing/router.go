@@ -183,6 +183,11 @@ func (r *Router) HealthReport() []DriverHealth {
 	return ReadAllHealth(r.healthDir)
 }
 
+// HealthDir returns the directory where driver health files are stored.
+func (r *Router) HealthDir() string {
+	return r.healthDir
+}
+
 // taskMinTier returns the minimum cost tier capable of handling the task type.
 // Keyword matching is case-insensitive. If no affinity matches, TierLocal is
 // returned so the cheapest possible driver is tried first.

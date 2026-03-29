@@ -16,8 +16,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -72,6 +74,7 @@ func main() {
 
 	healthDir := os.Getenv("AGENTGUARD_HEALTH_DIR")
 	router := routing.NewRouter(healthDir)
+	healthDir = router.HealthDir() // resolve default if env was empty
 	eventRouter := dispatch.NewEventRouter(dispatch.DefaultRules())
 	dispatcher := dispatch.NewDispatcher(rdb, router, coord, eventRouter, "", namespace)
 
@@ -102,7 +105,7 @@ func main() {
 		wg.Add(1)
 		go func(workerID int) {
 			defer wg.Done()
-			workerLoop(shutdownCtx, dispatcher, runAgentScript, workerID, pollInterval, workspaceDir, chains)
+			workerLoop(shutdownCtx, dispatcher, runAgentScript, workerID, pollInterval, workspaceDir, chains, healthDir)
 		}(i)
 	}
 
@@ -110,7 +113,7 @@ func main() {
 	fmt.Fprintf(os.Stderr, "octi-worker: all workers stopped\n")
 }
 
-func workerLoop(ctx context.Context, d *dispatch.Dispatcher, script string, id int, pollInterval time.Duration, workspaceDir string, chains dispatch.ChainConfig) {
+func workerLoop(ctx context.Context, d *dispatch.Dispatcher, script string, id int, pollInterval time.Duration, workspaceDir string, chains dispatch.ChainConfig, healthDir string) {
 	for {
 		// Check for shutdown
 		select {
@@ -140,13 +143,24 @@ func workerLoop(ctx context.Context, d *dispatch.Dispatcher, script string, id i
 		fmt.Fprintf(os.Stderr, "worker[%d]: executing %s\n", id, agent)
 		start := time.Now()
 
-		exitCode := executeAgent(ctx, script, agent)
+		exitCode, output := executeAgent(ctx, script, agent)
 		duration := time.Since(start).Seconds()
 
 		if exitCode == 0 {
 			fmt.Fprintf(os.Stderr, "worker[%d]: %s completed (%.1fs)\n", id, agent, duration)
 		} else {
 			fmt.Fprintf(os.Stderr, "worker[%d]: %s failed exit=%d (%.1fs)\n", id, agent, exitCode, duration)
+			// Check for credit/quota exhaustion and immediately open the driver circuit.
+			if driver, found := routing.DetectExhaustedDriver(output); found {
+				if driver == "unknown" {
+					fmt.Fprintf(os.Stderr, "worker[%d]: credit error detected in %s output (driver unknown)\n", id, agent)
+				} else {
+					fmt.Fprintf(os.Stderr, "worker[%d]: credit error detected — opening circuit for driver %s\n", id, driver)
+					if err := routing.OpenCircuit(healthDir, driver); err != nil {
+						fmt.Fprintf(os.Stderr, "worker[%d]: open circuit %s: %v\n", id, driver, err)
+					}
+				}
+			}
 		}
 
 		// Release the coordination claim so the agent can be dispatched again
@@ -172,22 +186,26 @@ func workerLoop(ctx context.Context, d *dispatch.Dispatcher, script string, id i
 	}
 }
 
-func executeAgent(ctx context.Context, script, agent string) int {
+// executeAgent runs the agent script and returns (exitCode, combinedOutput).
+// Output is streamed to os.Stdout/Stderr in real-time and also buffered for
+// post-run credit-error detection.
+func executeAgent(ctx context.Context, script, agent string) (int, string) {
 	cmd := exec.CommandContext(ctx, "bash", script, agent)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var buf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
 
 	if err := cmd.Run(); err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return exitErr.ExitCode()
+			return exitErr.ExitCode(), buf.String()
 		}
 		// If context was cancelled, the process was killed — return special code
 		if ctx.Err() != nil {
-			return -1
+			return -1, buf.String()
 		}
-		return 1
+		return 1, buf.String()
 	}
-	return 0
+	return 0, buf.String()
 }
 
 func sleep(ctx context.Context, d time.Duration) {

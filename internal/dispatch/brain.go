@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/AgentGuardHQ/octi-pulpo/internal/routing"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/sprint"
 )
 
@@ -37,16 +40,19 @@ type LeverageAction struct {
 //   - Queue health: alert on growing queue depth
 //   - Constraint analysis: identify the ONE bottleneck and focus on it
 //   - Sprint store sync: periodically refresh issue data from GitHub
+//   - Driver health probe: ping each driver every 15 min to detect stale state
 //   - Slack notifications: periodic budget dashboard + driver state change alerts
 type Brain struct {
 	dispatcher      *Dispatcher
 	chains          ChainConfig
 	tickInterval    time.Duration
+	probeInterval   time.Duration
 	log             *log.Logger
 	sprintStore     *sprint.Store
 	profiles        *ProfileStore
 	notifier        *Notifier
 	lastSync        time.Time
+	lastProbe       time.Time
 	lastDashboard   time.Time
 	dashboardPeriod time.Duration
 	driversWereDown bool // tracks transition for edge-triggered alerts
@@ -58,6 +64,7 @@ func NewBrain(dispatcher *Dispatcher, chains ChainConfig) *Brain {
 		dispatcher:      dispatcher,
 		chains:          chains,
 		tickInterval:    60 * time.Second,
+		probeInterval:   15 * time.Minute,
 		dashboardPeriod: 4 * time.Hour,
 		log:             log.New(os.Stderr, "brain: ", log.LstdFlags),
 	}
@@ -104,15 +111,18 @@ func (b *Brain) Tick(ctx context.Context) {
 	// 1. Sync sprint store every 5 minutes (rate limit friendly)
 	b.maybeSyncSprint(ctx)
 
-	// 2. Legacy checks
+	// 2. Probe driver health every 15 minutes
+	b.maybeProbeDrivers(ctx)
+
+	// 3. Legacy checks
 	b.checkBackpressureRecovery(ctx)
 	b.checkQueueHealth(ctx)
 	b.checkStalledDispatches(ctx)
 
-	// 3. Periodic Slack dashboard
+	// 4. Periodic Slack dashboard
 	b.maybePostDashboard(ctx)
 
-	// 4. Constraint-driven dispatch (if sprint store is available)
+	// 5. Constraint-driven dispatch (if sprint store is available)
 	if b.sprintStore != nil {
 		constraint := b.identifyConstraint(ctx)
 		b.maybeNotifyConstraintChange(ctx, constraint)
@@ -143,6 +153,90 @@ func (b *Brain) maybeSyncSprint(ctx context.Context) {
 		}
 	}
 	b.lastSync = time.Now()
+}
+
+// maybeProbeDrivers runs driver health probes on the configured interval.
+func (b *Brain) maybeProbeDrivers(ctx context.Context) {
+	if time.Since(b.lastProbe) < b.probeInterval {
+		return
+	}
+	b.ProbeDrivers(ctx)
+	b.lastProbe = time.Now()
+}
+
+// ProbeDrivers checks all discovered drivers with a lightweight CLI probe.
+// CLOSED/HALF drivers: confirms they are still reachable.
+// OPEN drivers: checks whether budget has recovered, closes circuit if so.
+func (b *Brain) ProbeDrivers(ctx context.Context) {
+	healthDir := b.dispatcher.router.HealthDir()
+	drivers := routing.DiscoverDrivers(healthDir)
+	if len(drivers) == 0 {
+		return
+	}
+	b.log.Printf("probing %d drivers for health", len(drivers))
+	for _, driver := range drivers {
+		health := routing.ReadDriverHealth(healthDir, driver)
+		ok, output := b.probeOneDriver(ctx, driver)
+		if ok {
+			if health.CircuitState == "OPEN" {
+				b.log.Printf("driver %s recovered — closing circuit", driver)
+				if err := routing.CloseCircuit(healthDir, driver); err != nil {
+					b.log.Printf("close circuit %s: %v", driver, err)
+				}
+			}
+		} else {
+			if health.CircuitState != "OPEN" {
+				// Check whether the failure is a credit error vs an unavailability
+				if probedDriver, found := routing.DetectExhaustedDriver(output); found {
+					reportDriver := driver
+					if probedDriver != "unknown" {
+						reportDriver = probedDriver
+					}
+					b.log.Printf("driver %s probe: credit error detected — opening circuit", reportDriver)
+					if err := routing.OpenCircuit(healthDir, reportDriver); err != nil {
+						b.log.Printf("open circuit %s: %v", reportDriver, err)
+					}
+				} else {
+					b.log.Printf("driver %s probe: unreachable (not a credit error, skipping circuit change)", driver)
+				}
+			}
+		}
+	}
+}
+
+// driverProbeCommands maps driver names to the lightweight CLI command used
+// to verify reachability. Commands are intentionally non-destructive (version
+// checks or auth status only — no token consumption).
+var driverProbeCommands = map[string][]string{
+	"claude-code": {"claude", "--version"},
+	"copilot":     {"gh", "auth", "status"},
+	"codex":       {"codex", "--version"},
+	"gemini":      {"gemini", "--version"},
+	"goose":       {"goose", "--version"},
+	"ollama":      {"ollama", "--version"},
+	"nemotron":    {"ollama", "--version"},
+	"openclaw":    {"openclaw", "--version"},
+}
+
+// probeOneDriver runs a lightweight availability check for the given driver.
+// Returns (true, "") on success, (false, combinedOutput) on failure.
+func (b *Brain) probeOneDriver(ctx context.Context, driver string) (bool, string) {
+	args, known := driverProbeCommands[driver]
+	if !known {
+		// Unknown driver: assume healthy (no probe command available)
+		return true, ""
+	}
+
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(probeCtx, args[0], args[1:]...)
+	out, err := cmd.CombinedOutput()
+	output := strings.TrimSpace(string(out))
+	if err != nil {
+		return false, output
+	}
+	return true, output
 }
 
 // maybePostDashboard posts a Slack budget dashboard at most once per dashboardPeriod.
