@@ -171,6 +171,7 @@ func (ws *WebhookServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Agent    string `json:"agent"`
 		Priority int    `json:"priority"`
+		Budget   string `json:"budget"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -189,7 +190,7 @@ func (ws *WebhookServer) handleTrigger(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := context.Background()
-	result, err := ws.dispatcher.Dispatch(ctx, event, req.Agent, req.Priority)
+	result, err := ws.dispatcher.Dispatch(ctx, event, req.Agent, req.Priority, req.Budget)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -208,6 +209,7 @@ func (ws *WebhookServer) handleTimerTrigger(w http.ResponseWriter, r *http.Reque
 	var req struct {
 		Agent    string `json:"agent"`
 		Priority int    `json:"priority"`
+		Budget   string `json:"budget"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid JSON body", http.StatusBadRequest)
@@ -229,7 +231,7 @@ func (ws *WebhookServer) handleTimerTrigger(w http.ResponseWriter, r *http.Reque
 	}
 
 	ctx := context.Background()
-	result, err := ws.dispatcher.Dispatch(ctx, event, req.Agent, req.Priority)
+	result, err := ws.dispatcher.Dispatch(ctx, event, req.Agent, req.Priority, req.Budget)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

@@ -144,7 +144,7 @@ func (sw *SignalWatcher) handleNeedHelp(ctx context.Context, sig signalPayload) 
 		Priority: 1,
 	}
 
-	result, err := sw.dispatcher.Dispatch(ctx, event, senior, 1)
+	result, err := sw.dispatcher.Dispatch(ctx, event, senior, 1, "high")
 	if err != nil {
 		sw.log.Printf("dispatch %s for need-help: %v", senior, err)
 		return
@@ -172,7 +172,7 @@ func (sw *SignalWatcher) handleBlocked(ctx context.Context, sig signalPayload) {
 		Priority: 1,
 	}
 
-	result, err := sw.dispatcher.Dispatch(ctx, event, triage, 1)
+	result, err := sw.dispatcher.Dispatch(ctx, event, triage, 1, "high")
 	if err != nil {
 		sw.log.Printf("dispatch %s for blocked: %v", triage, err)
 		return
@@ -195,7 +195,7 @@ func (sw *SignalWatcher) handleDirective(ctx context.Context, sig signalPayload)
 
 	var dispatched int
 	for _, em := range sw.allEMs {
-		result, err := sw.dispatcher.Dispatch(ctx, event, em, 1)
+		result, err := sw.dispatcher.Dispatch(ctx, event, em, 1, "high")
 		if err != nil {
 			sw.log.Printf("dispatch %s for directive: %v", em, err)
 			continue

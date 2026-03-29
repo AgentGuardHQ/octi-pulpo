@@ -313,7 +313,7 @@ func (b *Brain) executeLeverageAction(ctx context.Context, action LeverageAction
 		Priority: 1,
 	}
 
-	result, err := b.dispatcher.Dispatch(ctx, event, action.Agent, 1)
+	result, err := b.dispatcher.Dispatch(ctx, event, action.Agent, 1, "high")
 	if err != nil {
 		b.log.Printf("leverage dispatch %s: %v", action.Agent, err)
 		return
@@ -424,7 +424,7 @@ func (b *Brain) checkBackpressureRecovery(ctx context.Context) {
 			Priority: 2,
 		}
 
-		result, err := b.dispatcher.Dispatch(ctx, event, agent, 2)
+		result, err := b.dispatcher.Dispatch(ctx, event, agent, 2, "high")
 		if err != nil {
 			b.log.Printf("re-dispatch %s: %v", agent, err)
 			continue

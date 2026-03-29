@@ -63,7 +63,9 @@ func NewDispatcher(rdb *redis.Client, router *routing.Router, coord *coordinatio
 //  4. If yes to all: claim the task + enqueue to priority queue
 //  5. If driver exhausted: queue for later (backpressure, don't fail)
 //  6. Return the decision with reason
-func (d *Dispatcher) Dispatch(ctx context.Context, event Event, agentName string, priority int) (DispatchResult, error) {
+//
+// budget controls which cost tiers are eligible: "low", "medium", "high" (default "high").
+func (d *Dispatcher) Dispatch(ctx context.Context, event Event, agentName string, priority int, budget string) (DispatchResult, error) {
 	now := time.Now().UTC()
 	result := DispatchResult{
 		Agent:     agentName,
@@ -98,7 +100,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, event Event, agentName string
 	}
 
 	// 3. Check driver health/budget
-	routeDecision := d.router.Recommend(agentName, "high")
+	if budget == "" {
+		budget = "high"
+	}
+	routeDecision := d.router.Recommend(agentName, budget)
 
 	if routeDecision.Skip {
 		// All drivers exhausted -- queue for later (backpressure)
@@ -165,7 +170,7 @@ func (d *Dispatcher) DispatchEvent(ctx context.Context, event Event) ([]Dispatch
 		if event.Priority > 0 && event.Priority < priority {
 			priority = event.Priority // event can escalate, not downgrade
 		}
-		result, err := d.Dispatch(ctx, event, rule.AgentName, priority)
+		result, err := d.Dispatch(ctx, event, rule.AgentName, priority, rule.Budget)
 		if err != nil {
 			results = append(results, DispatchResult{
 				Agent:     rule.AgentName,

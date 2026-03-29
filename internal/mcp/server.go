@@ -292,6 +292,7 @@ func (s *Server) handleToolCall(req Request) Response {
 		var args struct {
 			Agent    string `json:"agent"`
 			Priority int    `json:"priority"`
+			Budget   string `json:"budget"`
 		}
 		json.Unmarshal(params.Arguments, &args)
 		if args.Agent == "" {
@@ -302,7 +303,7 @@ func (s *Server) handleToolCall(req Request) Response {
 			Source:  "mcp",
 			Payload: map[string]string{"triggered_by": agentID},
 		}
-		result, err := s.dispatcher.Dispatch(ctx, event, args.Agent, args.Priority)
+		result, err := s.dispatcher.Dispatch(ctx, event, args.Agent, args.Priority, args.Budget)
 		if err != nil {
 			return errorResp(req.ID, -32000, err.Error())
 		}
@@ -472,12 +473,13 @@ func toolDefs() []ToolDef {
 		},
 		{
 			Name:        "dispatch_trigger",
-			Description: "Manually trigger an agent run. Bypasses event matching but still respects cooldown and coordination claims.",
+			Description: "Manually trigger an agent run. Bypasses event matching but still respects cooldown, coordination claims, and budget constraints.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"agent":    map[string]string{"type": "string", "description": "Agent name to trigger"},
 					"priority": map[string]interface{}{"type": "number", "description": "Priority (0=critical, 1=high, 2=normal, 3=background). Default: 1"},
+					"budget":   map[string]interface{}{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Cost tier cap: low (local only), medium (local+subscription+cli), high (all). Default: high"},
 				},
 				"required": []string{"agent"},
 			},

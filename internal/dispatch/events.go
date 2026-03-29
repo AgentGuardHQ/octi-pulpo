@@ -36,6 +36,7 @@ type EventRule struct {
 	AgentName string        // agent to dispatch
 	Priority  int           // default priority for this rule
 	Cooldown  time.Duration // minimum time between dispatches for same agent
+	Budget    string        // cost tier cap: "low", "medium", "high" (default "high")
 }
 
 // EventRouter maps incoming events to the agents that should handle them.
@@ -89,6 +90,7 @@ func DefaultRules() []EventRule {
 			AgentName: "workspace-pr-review-agent",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
+			Budget:    "high",
 		},
 		{
 			EventType: EventPRUpdated,
@@ -96,6 +98,7 @@ func DefaultRules() []EventRule {
 			AgentName: "workspace-pr-review-agent",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
+			Budget:    "high",
 		},
 		{
 			EventType: EventPROpened,
@@ -103,6 +106,7 @@ func DefaultRules() []EventRule {
 			AgentName: "code-review-agent-cloud",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
+			Budget:    "high",
 		},
 		{
 			EventType: EventPRUpdated,
@@ -110,6 +114,7 @@ func DefaultRules() []EventRule {
 			AgentName: "code-review-agent-cloud",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
+			Budget:    "high",
 		},
 		{
 			EventType: EventPROpened,
@@ -117,6 +122,7 @@ func DefaultRules() []EventRule {
 			AgentName: "analytics-pr-review-agent",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
+			Budget:    "high",
 		},
 		{
 			EventType: EventPROpened,
@@ -124,15 +130,17 @@ func DefaultRules() []EventRule {
 			AgentName: "workspace-pr-review-agent",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
+			Budget:    "high",
 		},
 
-		// PR merger agents (triggered by CI completion)
+		// PR merger agents (triggered by CI completion) — medium budget: prefer local/subscription
 		{
 			EventType: EventCICompleted,
 			RepoMatch: "AgentGuardHQ/agentguard",
 			AgentName: "pr-merger-agent",
 			Priority:  2,
 			Cooldown:  10 * time.Minute, // prevents stampede (was 214 runs/day)
+			Budget:    "medium",
 		},
 		{
 			EventType: EventCICompleted,
@@ -140,6 +148,7 @@ func DefaultRules() []EventRule {
 			AgentName: "pr-merger-agent-cloud",
 			Priority:  2,
 			Cooldown:  10 * time.Minute,
+			Budget:    "medium",
 		},
 		{
 			EventType: EventCICompleted,
@@ -147,6 +156,7 @@ func DefaultRules() []EventRule {
 			AgentName: "analytics-pr-review-agent",
 			Priority:  2,
 			Cooldown:  10 * time.Minute,
+			Budget:    "medium",
 		},
 		{
 			EventType: EventCICompleted,
@@ -154,15 +164,17 @@ func DefaultRules() []EventRule {
 			AgentName: "pr-merger-agent",
 			Priority:  2,
 			Cooldown:  10 * time.Minute,
+			Budget:    "medium",
 		},
 
-		// Timer-based agents (replacing blind cron)
+		// Timer-based agents (replacing blind cron) — medium budget: use local/CLI, not API
 		{
 			EventType: EventTimer,
 			RepoMatch: "",
 			AgentName: "kernel-sr",
 			Priority:  2,
 			Cooldown:  3 * time.Hour,
+			Budget:    "medium",
 		},
 		{
 			EventType: EventTimer,
@@ -170,6 +182,7 @@ func DefaultRules() []EventRule {
 			AgentName: "kernel-em",
 			Priority:  1,
 			Cooldown:  6 * time.Hour,
+			Budget:    "medium",
 		},
 		{
 			EventType: EventTimer,
@@ -177,6 +190,7 @@ func DefaultRules() []EventRule {
 			AgentName: "cloud-em",
 			Priority:  1,
 			Cooldown:  6 * time.Hour,
+			Budget:    "medium",
 		},
 		{
 			EventType: EventTimer,
@@ -184,6 +198,7 @@ func DefaultRules() []EventRule {
 			AgentName: "platform-em",
 			Priority:  1,
 			Cooldown:  6 * time.Hour,
+			Budget:    "medium",
 		},
 		{
 			EventType: EventTimer,
@@ -191,15 +206,17 @@ func DefaultRules() []EventRule {
 			AgentName: "analytics-em",
 			Priority:  1,
 			Cooldown:  6 * time.Hour,
+			Budget:    "medium",
 		},
 
-		// Manual and Slack triggers (no cooldown -- explicit human action)
+		// Manual and Slack triggers — high budget: humans explicitly requesting, cost secondary
 		{
 			EventType: EventManual,
 			RepoMatch: "",
 			AgentName: "*", // wildcard -- manual can trigger any agent
 			Priority:  0,
 			Cooldown:  0,
+			Budget:    "high",
 		},
 		{
 			EventType: EventSlackAction,
@@ -207,6 +224,7 @@ func DefaultRules() []EventRule {
 			AgentName: "*",
 			Priority:  1,
 			Cooldown:  2 * time.Minute,
+			Budget:    "high",
 		},
 	}
 }

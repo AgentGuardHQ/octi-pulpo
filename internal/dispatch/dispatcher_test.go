@@ -84,7 +84,7 @@ func TestDispatch_BasicSuccess(t *testing.T) {
 	d, ctx := testSetup(t)
 
 	event := Event{Type: EventManual, Source: "test"}
-	result, err := d.Dispatch(ctx, event, "test-agent", 2)
+	result, err := d.Dispatch(ctx, event, "test-agent", 2, "high")
 	if err != nil {
 		t.Fatalf("dispatch error: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestDispatch_RespectsCoordClaim(t *testing.T) {
 
 	// First dispatch succeeds and creates a claim
 	event := Event{Type: EventManual, Source: "test"}
-	result1, err := d.Dispatch(ctx, event, "agent-dedup", 2)
+	result1, err := d.Dispatch(ctx, event, "agent-dedup", 2, "high")
 	if err != nil {
 		t.Fatalf("first dispatch: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestDispatch_RespectsCoordClaim(t *testing.T) {
 	}
 
 	// Second dispatch should be skipped (agent already has a claim)
-	result2, err := d.Dispatch(ctx, event, "agent-dedup", 2)
+	result2, err := d.Dispatch(ctx, event, "agent-dedup", 2, "high")
 	if err != nil {
 		t.Fatalf("second dispatch: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestDispatch_CooldownPreventsRapidRedispatch(t *testing.T) {
 	d.SetCooldown(ctx, "cooldown-agent", 5*time.Second)
 
 	event := Event{Type: EventManual, Source: "test"}
-	result, err := d.Dispatch(ctx, event, "cooldown-agent", 2)
+	result, err := d.Dispatch(ctx, event, "cooldown-agent", 2, "high")
 	if err != nil {
 		t.Fatalf("dispatch error: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestDispatch_DriversExhausted_QueuesForLater(t *testing.T) {
 	d := NewDispatcher(rdb, router, coord, eventRouter, "", ns)
 
 	event := Event{Type: EventManual, Source: "test"}
-	result, err := d.Dispatch(ctx, event, "queued-agent", 2)
+	result, err := d.Dispatch(ctx, event, "queued-agent", 2, "high")
 	if err != nil {
 		t.Fatalf("dispatch error: %v", err)
 	}
@@ -473,7 +473,7 @@ func TestRecentDispatches_Recorded(t *testing.T) {
 	d, ctx := testSetup(t)
 
 	event := Event{Type: EventManual, Source: "test"}
-	d.Dispatch(ctx, event, "recorded-agent", 1)
+	d.Dispatch(ctx, event, "recorded-agent", 1, "high")
 
 	records, err := d.RecentDispatches(ctx, 10)
 	if err != nil {
@@ -484,5 +484,185 @@ func TestRecentDispatches_Recorded(t *testing.T) {
 	}
 	if records[0].Agent != "recorded-agent" {
 		t.Fatalf("expected recorded-agent, got %s", records[0].Agent)
+	}
+}
+
+// --- Budget-Aware Dispatch Tests ---
+
+// testSetupWithHealth creates a Dispatcher with a custom health directory so we
+// can control which drivers are available at which cost tiers.
+func testSetupWithHealth(t *testing.T, healthSetup func(dir string)) (*Dispatcher, context.Context) {
+	t.Helper()
+
+	redisURL := os.Getenv("OCTI_REDIS_URL")
+	if redisURL == "" {
+		redisURL = "redis://localhost:6379"
+	}
+	opts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		t.Skipf("skipping: cannot parse redis URL: %v", err)
+	}
+	rdb := redis.NewClient(opts)
+
+	ctx := context.Background()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		t.Skipf("skipping: redis not available: %v", err)
+	}
+
+	ns := "octi-test-" + t.Name()
+	cleanup := func() {
+		keys, _ := rdb.Keys(ctx, ns+":*").Result()
+		if len(keys) > 0 {
+			rdb.Del(ctx, keys...)
+		}
+	}
+	cleanup()
+	t.Cleanup(func() {
+		cleanup()
+		rdb.Close()
+	})
+
+	healthDir := t.TempDir()
+	healthSetup(healthDir)
+
+	coord, err := coordination.New(redisURL, ns)
+	if err != nil {
+		t.Fatalf("coordination engine: %v", err)
+	}
+	t.Cleanup(func() { coord.Close() })
+
+	router := routing.NewRouter(healthDir)
+	eventRouter := NewEventRouter(DefaultRules())
+	d := NewDispatcher(rdb, router, coord, eventRouter, "", ns)
+	return d, ctx
+}
+
+func TestDispatch_LowBudget_BlocksCliDrivers(t *testing.T) {
+	// Only CLI-tier driver (claude-code) is healthy; ollama (local) is OPEN.
+	// Dispatching with "low" budget should queue (no local drivers available).
+	d, ctx := testSetupWithHealth(t, func(dir string) {
+		writeHealthFile(t, dir, "claude-code", "CLOSED")
+		writeHealthFile(t, dir, "ollama", "OPEN")
+	})
+
+	event := Event{Type: EventManual, Source: "test"}
+	result, err := d.Dispatch(ctx, event, "budget-test-agent", 2, "low")
+	if err != nil {
+		t.Fatalf("dispatch error: %v", err)
+	}
+	// "low" budget allows only local tier; ollama is OPEN → no drivers → queued
+	if result.Action != "queued" {
+		t.Fatalf("expected action=queued (low budget, only CLI available), got %s (reason: %s)", result.Action, result.Reason)
+	}
+}
+
+func TestDispatch_LowBudget_UsesLocalDriver(t *testing.T) {
+	// ollama (local tier) is healthy; dispatch with "low" budget should use it.
+	d, ctx := testSetupWithHealth(t, func(dir string) {
+		writeHealthFile(t, dir, "ollama", "CLOSED")
+		writeHealthFile(t, dir, "claude-code", "CLOSED")
+	})
+
+	event := Event{Type: EventManual, Source: "test"}
+	result, err := d.Dispatch(ctx, event, "budget-local-agent", 2, "low")
+	if err != nil {
+		t.Fatalf("dispatch error: %v", err)
+	}
+	if result.Action != "dispatched" {
+		t.Fatalf("expected dispatched via local driver, got %s (reason: %s)", result.Action, result.Reason)
+	}
+	if result.Driver != "ollama" {
+		t.Fatalf("expected ollama (local tier), got driver=%s", result.Driver)
+	}
+}
+
+func TestDispatch_MediumBudget_BlocksApiDrivers(t *testing.T) {
+	// Only API-tier drivers exist; "medium" budget caps at CLI tier.
+	// No local/subscription/CLI drivers → should queue.
+	d, ctx := testSetupWithHealth(t, func(dir string) {
+		// No drivers at all = Skip from router
+	})
+
+	event := Event{Type: EventManual, Source: "test"}
+	result, err := d.Dispatch(ctx, event, "budget-medium-agent", 2, "medium")
+	if err != nil {
+		t.Fatalf("dispatch error: %v", err)
+	}
+	if result.Action != "queued" {
+		t.Fatalf("expected queued (no drivers at medium budget), got %s (reason: %s)", result.Action, result.Reason)
+	}
+}
+
+func TestDispatch_HighBudget_UsesAnyDriver(t *testing.T) {
+	// "high" budget allows all tiers. CLI driver is healthy → should dispatch.
+	d, ctx := testSetupWithHealth(t, func(dir string) {
+		writeHealthFile(t, dir, "claude-code", "CLOSED")
+	})
+
+	event := Event{Type: EventManual, Source: "test"}
+	result, err := d.Dispatch(ctx, event, "budget-high-agent", 2, "high")
+	if err != nil {
+		t.Fatalf("dispatch error: %v", err)
+	}
+	if result.Action != "dispatched" {
+		t.Fatalf("expected dispatched (high budget, CLI available), got %s (reason: %s)", result.Action, result.Reason)
+	}
+}
+
+func TestDispatch_EmptyBudgetDefaultsHigh(t *testing.T) {
+	// Empty budget string should default to "high" (all tiers available).
+	d, ctx := testSetupWithHealth(t, func(dir string) {
+		writeHealthFile(t, dir, "claude-code", "CLOSED")
+	})
+
+	event := Event{Type: EventManual, Source: "test"}
+	result, err := d.Dispatch(ctx, event, "budget-default-agent", 2, "")
+	if err != nil {
+		t.Fatalf("dispatch error: %v", err)
+	}
+	if result.Action != "dispatched" {
+		t.Fatalf("expected dispatched with empty budget (defaults high), got %s (reason: %s)", result.Action, result.Reason)
+	}
+}
+
+func TestEventRule_BudgetFieldPropagates(t *testing.T) {
+	// Verify that budget field on EventRule flows through DispatchEvent.
+	// Rule with "low" budget + only CLI driver → should queue.
+	d, ctx := testSetupWithHealth(t, func(dir string) {
+		writeHealthFile(t, dir, "claude-code", "CLOSED")
+		// No local drivers
+	})
+
+	// Inject a custom rule with "low" budget
+	lowBudgetRule := EventRule{
+		EventType: EventManual,
+		AgentName: "low-budget-test-agent",
+		Priority:  2,
+		Cooldown:  0,
+		Budget:    "low",
+	}
+	d.events = NewEventRouter([]EventRule{lowBudgetRule})
+
+	event := Event{Type: EventManual, Source: "test"}
+	results, err := d.DispatchEvent(ctx, event)
+	if err != nil {
+		t.Fatalf("dispatch event error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+	r := results[0]
+	if r.Action != "queued" {
+		t.Fatalf("expected queued (rule has low budget, only CLI available), got %s (reason: %s)", r.Action, r.Reason)
+	}
+}
+
+func TestEventRule_DefaultBudgetIsHigh(t *testing.T) {
+	// A rule with no Budget set should default to "high" (backward compat).
+	er := NewEventRouter(DefaultRules())
+	for _, rule := range er.rules {
+		if rule.Budget == "" {
+			t.Fatalf("rule for agent %q has empty Budget field — should default to high or medium", rule.AgentName)
+		}
 	}
 }

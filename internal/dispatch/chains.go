@@ -111,7 +111,7 @@ func TriggerChains(ctx context.Context, d *Dispatcher, chains ChainConfig, agent
 			Priority: 1, // completion chains are high priority
 		}
 
-		result, err := d.Dispatch(ctx, event, target, 1)
+		result, err := d.Dispatch(ctx, event, target, 1, "high")
 		if err != nil {
 			results = append(results, DispatchResult{
 				Agent:     target,
