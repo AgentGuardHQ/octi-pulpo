@@ -25,14 +25,17 @@ var driverTiers = map[string]CostTier{
 	// Local ($0)
 	"ollama":   TierLocal,
 	"nemotron": TierLocal,
-	// Subscription (browser-based)
+	// Subscription (browser-based, already-paying seat)
 	"openclaw": TierSubscription,
-	// CLI (metered)
+	// CLI (already-paying seat: coding, PRs, commits)
 	"claude-code": TierCLI,
 	"copilot":     TierCLI,
 	"codex":       TierCLI,
 	"gemini":      TierCLI,
 	"goose":       TierCLI,
+	// API (per-token: burst capacity, programmatic access)
+	"anthropic-api": TierAPI,
+	"openai-api":    TierAPI,
 }
 
 // DriverHealth represents the runtime health of a single driver.
@@ -70,13 +73,24 @@ func NewRouter(healthDir string) *Router {
 }
 
 // Recommend returns the cheapest healthy driver for the given task.
-// The budget parameter controls which cost tiers are considered:
-//   - "low"    -> local only
-//   - "medium" -> local + subscription + cli
-//   - "high"   -> all tiers
-//   - ""       -> all tiers (default)
+//
+// Two constraints bound the tier search:
+//   - minTier (from taskType affinity): coding tasks won't route to local models
+//   - maxTier (from budget): high-cost tiers are excluded when budget is constrained
+//
+// If minTier > maxTier, returns Skip with an explanatory reason.
+// Budget values: "low" (local only), "medium" (up to cli), "high"/"" (all tiers).
 func (r *Router) Recommend(taskType, budget string) RouteDecision {
+	minTier := taskAffinityTier(taskType)
 	maxTier := maxTierForBudget(budget)
+
+	if tierIndex(minTier) > tierIndex(maxTier) {
+		return RouteDecision{
+			Skip:   true,
+			Reason: fmt.Sprintf("task type requires %s tier minimum, but budget allows %s maximum", minTier, maxTier),
+		}
+	}
+
 	drivers := DiscoverDrivers(r.healthDir)
 
 	// Build health map from discovered drivers.
@@ -89,14 +103,16 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 	var chosen *RouteDecision
 	var fallbacks []string
 
-	// Walk tiers in cost order: cheapest first.
+	// Walk tiers in cost order: cheapest first, bounded by [minTier, maxTier].
 	for _, tier := range tierOrder {
+		if tierIndex(tier) < tierIndex(minTier) {
+			continue // below task affinity minimum
+		}
 		if tierIndex(tier) > tierIndex(maxTier) {
 			break
 		}
 		for name, health := range healthMap {
-			driverTier := tierFor(name)
-			if driverTier != tier {
+			if tierFor(name) != tier {
 				continue
 			}
 			if health.CircuitState == "OPEN" {
@@ -113,7 +129,7 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 					Driver:     name,
 					Tier:       string(tier),
 					Confidence: confidence,
-					Reason:     fmt.Sprintf("cheapest healthy driver (tier: %s, state: %s)", tier, health.CircuitState),
+					Reason:     fmt.Sprintf("cheapest healthy driver in allowed range (tier: %s, state: %s)", tier, health.CircuitState),
 				}
 			} else {
 				fallbacks = append(fallbacks, name)
@@ -149,6 +165,37 @@ func maxTierForBudget(budget string) CostTier {
 	default:
 		return TierAPI
 	}
+}
+
+// taskAffinityTier returns the minimum cost tier suitable for a given task type.
+// Local models handle triage/classification; coding tasks need CLI-grade models;
+// briefings and artifacts work well with subscription browser drivers.
+func taskAffinityTier(taskType string) CostTier {
+	lower := strings.ToLower(taskType)
+
+	codingKeywords := []string{
+		"code", "coding", "pr", "pull request", "commit", "review",
+		"refactor", "debug", "implement", "fix bug", "test", "build",
+		"deploy", "migration", "schema",
+	}
+	for _, kw := range codingKeywords {
+		if strings.Contains(lower, kw) {
+			return TierCLI
+		}
+	}
+
+	briefingKeywords := []string{
+		"briefing", "artifact", "summary", "document", "research",
+		"report", "analysis", "notebooklm", "chatgpt",
+	}
+	for _, kw := range briefingKeywords {
+		if strings.Contains(lower, kw) {
+			return TierSubscription
+		}
+	}
+
+	// Default: no minimum — cheapest available driver wins.
+	return TierLocal
 }
 
 // tierFor returns the cost tier for a driver, defaulting to CLI.

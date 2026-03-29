@@ -246,3 +246,156 @@ func TestDiscoverDrivers_NonexistentDir(t *testing.T) {
 		t.Fatalf("expected nil for nonexistent dir, got %v", drivers)
 	}
 }
+
+// --- Task-type affinity routing tests (issue #8) ---
+
+func TestRecommend_CodingTaskSkipsLocalDriver(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("code review for PR #42", "high")
+
+	if dec.Skip {
+		t.Fatal("expected a driver recommendation, got Skip")
+	}
+	// Coding task: min tier is CLI — ollama (local) must be skipped
+	if dec.Driver == "ollama" {
+		t.Fatal("coding task should not route to local driver (ollama)")
+	}
+	if dec.Tier != string(TierCLI) {
+		t.Fatalf("expected cli tier for coding task, got %s", dec.Tier)
+	}
+}
+
+func TestRecommend_CodingTaskLowBudgetSkips(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("implement new feature", "low")
+
+	// Coding needs CLI (min), but low budget caps at local (max) — conflict → Skip
+	if !dec.Skip {
+		t.Fatalf("expected Skip when coding task conflicts with low budget, got driver=%s", dec.Driver)
+	}
+	if dec.Reason == "" {
+		t.Fatal("expected a reason for the skip")
+	}
+}
+
+func TestRecommend_BriefingTaskUsesSubscription(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "openclaw", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("generate CTO briefing document", "high")
+
+	if dec.Skip {
+		t.Fatal("expected a driver recommendation, got Skip")
+	}
+	// Briefing affinity: min tier is subscription — ollama (local) must be skipped
+	if dec.Driver == "ollama" {
+		t.Fatal("briefing task should not route to local driver")
+	}
+	if dec.Tier != string(TierSubscription) {
+		t.Fatalf("expected subscription tier for briefing task, got %s", dec.Tier)
+	}
+}
+
+func TestRecommend_TriageTaskCanUseLocal(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("triage incoming issues", "high")
+
+	if dec.Skip {
+		t.Fatal("expected a driver recommendation, got Skip")
+	}
+	// Triage is local-capable — cheapest (local) should win
+	if dec.Tier != string(TierLocal) {
+		t.Fatalf("expected local tier for triage task, got %s", dec.Tier)
+	}
+}
+
+func TestRecommend_APITierDriverSelectedAsLastResort(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "OPEN", Failures: 5})
+	writeHealth(t, dir, "openclaw", HealthFile{State: "OPEN", Failures: 3})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "OPEN", Failures: 8})
+	writeHealth(t, dir, "anthropic-api", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("any task", "high")
+
+	if dec.Skip {
+		t.Fatal("expected anthropic-api as last-resort, got Skip")
+	}
+	if dec.Driver != "anthropic-api" {
+		t.Fatalf("expected anthropic-api (only healthy driver), got %s", dec.Driver)
+	}
+	if dec.Tier != string(TierAPI) {
+		t.Fatalf("expected api tier, got %s", dec.Tier)
+	}
+}
+
+func TestRecommend_APITierNotUsedWhenBudgetMedium(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "anthropic-api", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("general task", "medium")
+
+	if dec.Skip {
+		t.Fatal("expected cli driver for medium budget, got Skip")
+	}
+	// medium budget caps at CLI — API tier must not be selected
+	if dec.Tier == string(TierAPI) {
+		t.Fatal("API tier should not be used when budget is medium")
+	}
+}
+
+func TestTaskAffinityTier_CodingKeywords(t *testing.T) {
+	codingTasks := []string{
+		"code review", "PR review", "commit changes", "implement feature",
+		"fix bug in auth", "refactor database layer", "write tests", "debug crash",
+	}
+	for _, task := range codingTasks {
+		tier := taskAffinityTier(task)
+		if tier != TierCLI {
+			t.Errorf("task %q: expected cli tier, got %s", task, tier)
+		}
+	}
+}
+
+func TestTaskAffinityTier_BriefingKeywords(t *testing.T) {
+	briefingTasks := []string{
+		"generate briefing", "write summary", "create report", "research competitors",
+		"document architecture", "analysis of Q1 results",
+	}
+	for _, task := range briefingTasks {
+		tier := taskAffinityTier(task)
+		if tier != TierSubscription {
+			t.Errorf("task %q: expected subscription tier, got %s", task, tier)
+		}
+	}
+}
+
+func TestTaskAffinityTier_DefaultsToLocal(t *testing.T) {
+	genericTasks := []string{
+		"triage issues", "classify tickets", "label open issues", "quick check",
+	}
+	for _, task := range genericTasks {
+		tier := taskAffinityTier(task)
+		if tier != TierLocal {
+			t.Errorf("task %q: expected local tier default, got %s", task, tier)
+		}
+	}
+}
