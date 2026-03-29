@@ -110,6 +110,9 @@ func main() {
 			brain := dispatch.NewBrain(dispatcher, chains)
 			brain.SetSprintStore(sprintStore)
 			brain.SetProfileStore(profiles)
+			if slackURL := os.Getenv("SLACK_WEBHOOK_URL"); slackURL != "" {
+				brain.SetNotifier(dispatch.NewNotifier(slackURL))
+			}
 			go func() {
 				if err := brain.Run(ctx); err != nil && ctx.Err() == nil {
 					fmt.Fprintf(os.Stderr, "brain: %v\n", err)
