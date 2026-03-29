@@ -20,11 +20,12 @@ import (
 // WebhookServer is a lightweight HTTP server for receiving GitHub webhooks.
 // It replaces webhook-listener.py with coordinated dispatch.
 type WebhookServer struct {
-	dispatcher  *Dispatcher
-	secret      []byte
-	mux         *http.ServeMux
-	sprintStore *sprint.Store
-	benchmark   *BenchmarkTracker
+	dispatcher   *Dispatcher
+	secret       []byte
+	mux          *http.ServeMux
+	sprintStore  *sprint.Store
+	benchmark    *BenchmarkTracker
+	profileStore *ProfileStore
 }
 
 // NewWebhookServer creates a webhook handler backed by the dispatcher.
@@ -53,6 +54,7 @@ func NewWebhookServer(dispatcher *Dispatcher, secretFile string) *WebhookServer 
 	ws.mux.HandleFunc("/sprint/status", ws.handleSprintStatus)
 	ws.mux.HandleFunc("/sprint/sync", ws.handleSprintSync)
 	ws.mux.HandleFunc("/benchmark", ws.handleBenchmark)
+	ws.mux.HandleFunc("/leaderboard", ws.handleLeaderboard)
 	return ws
 }
 
@@ -64,6 +66,11 @@ func (ws *WebhookServer) SetSprintStore(s *sprint.Store) {
 // SetBenchmark enables benchmark HTTP endpoints.
 func (ws *WebhookServer) SetBenchmark(bt *BenchmarkTracker) {
 	ws.benchmark = bt
+}
+
+// SetProfileStore enables the leaderboard HTTP endpoint.
+func (ws *WebhookServer) SetProfileStore(ps *ProfileStore) {
+	ws.profileStore = ps
 }
 
 // ServeHTTP implements the http.Handler interface.
@@ -312,6 +319,27 @@ func (ws *WebhookServer) handleBenchmark(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(metrics)
+}
+
+func (ws *WebhookServer) handleLeaderboard(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if ws.profileStore == nil {
+		http.Error(w, "profile store not initialized", http.StatusServiceUnavailable)
+		return
+	}
+
+	ctx := context.Background()
+	result, err := ws.profileStore.Leaderboard(ctx)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
 }
 
 func (ws *WebhookServer) parseGitHubEvent(eventType, action, repo string, payload map[string]interface{}) *Event {

@@ -326,6 +326,184 @@ func TestAdaptiveCooldown_BudgetTightNoHistory(t *testing.T) {
 	}
 }
 
+func TestClassifyAgent_Tiers(t *testing.T) {
+	cases := []struct {
+		name     string
+		profile  AgentProfile
+		wantTier LeaderboardTier
+	}{
+		{
+			name: "MVP — high success, high commit rate",
+			profile: AgentProfile{
+				Name:          "mvp-agent",
+				FailRate:      0.05,
+				AvgCommits:    0.80,
+				AvgDuration:   90.0,
+				RecentResults: makeResults(20, 1, 1.0, 0.80), // 20 runs, 95% success, 80% have commits
+			},
+			wantTier: TierMVP,
+		},
+		{
+			name: "Reliable — decent success, some commits",
+			profile: AgentProfile{
+				Name:          "solid-agent",
+				FailRate:      0.20,
+				AvgCommits:    0.40,
+				AvgDuration:   60.0,
+				RecentResults: makeResults(10, 0, 0.80, 0.40),
+			},
+			wantTier: TierReliable,
+		},
+		{
+			name: "Underperforming — low success rate",
+			profile: AgentProfile{
+				Name:          "flaky-agent",
+				FailRate:      0.60,
+				AvgCommits:    0.20,
+				AvgDuration:   30.0,
+				RecentResults: makeResults(10, 0, 0.40, 0.20),
+			},
+			wantTier: TierUnderperforming,
+		},
+		{
+			name: "Underperforming — high waste",
+			profile: AgentProfile{
+				Name:          "waste-agent",
+				FailRate:      0.10,
+				AvgCommits:    0.10,
+				AvgDuration:   4.0,
+				RecentResults: makeWasteResults(10, 0.70), // 70% short no-op runs
+			},
+			wantTier: TierUnderperforming,
+		},
+		{
+			name: "Firing Line — very high fail rate",
+			profile: AgentProfile{
+				Name:          "broken-agent",
+				FailRate:      0.80,
+				AvgCommits:    0.05,
+				AvgDuration:   10.0,
+				RecentResults: makeResults(10, 0, 0.20, 0.05),
+			},
+			wantTier: TierFiringLine,
+		},
+		{
+			name: "Firing Line — extreme waste + many idles",
+			profile: AgentProfile{
+				Name:             "dead-agent",
+				FailRate:         0.10,
+				AvgCommits:       0.05,
+				AvgDuration:      3.0,
+				ConsecutiveIdles: 6,
+				RecentResults:    makeWasteResults(10, 0.90),
+			},
+			wantTier: TierFiringLine,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := classifyAgent(tc.profile)
+			if entry.Tier != tc.wantTier {
+				t.Errorf("agent %q: want tier %q, got %q (successRate=%.2f, commitRate=%.2f, wastePercent=%.1f)",
+					tc.profile.Name, tc.wantTier, entry.Tier,
+					entry.SuccessRate, entry.CommitRate, entry.WastePercent)
+			}
+		})
+	}
+}
+
+func TestLeaderboard_Integration(t *testing.T) {
+	d, ctx := testSetup(t)
+	ps := NewProfileStore(d.rdb, d.namespace, d.events.CooldownFor)
+
+	// Seed a few agents with distinct performance profiles
+	recordRuns := func(agent string, runs []RunResult) {
+		for _, r := range runs {
+			if err := ps.RecordRun(ctx, agent, r); err != nil {
+				t.Fatalf("record run for %s: %v", agent, err)
+			}
+		}
+	}
+
+	// MVP: 90% success, 70% commit rate
+	recordRuns("mvp-agent", []RunResult{
+		{ExitCode: 0, Duration: 90, HadCommits: true},
+		{ExitCode: 0, Duration: 80, HadCommits: true},
+		{ExitCode: 0, Duration: 70, HadCommits: true},
+		{ExitCode: 1, Duration: 60, HadCommits: false},
+		{ExitCode: 0, Duration: 100, HadCommits: true},
+		{ExitCode: 0, Duration: 90, HadCommits: true},
+		{ExitCode: 0, Duration: 85, HadCommits: true},
+		{ExitCode: 0, Duration: 75, HadCommits: false},
+		{ExitCode: 0, Duration: 65, HadCommits: true},
+		{ExitCode: 0, Duration: 95, HadCommits: true},
+	})
+
+	// Firing line: 80% fail
+	recordRuns("broken-agent", []RunResult{
+		{ExitCode: 1, Duration: 30, HadCommits: false},
+		{ExitCode: 1, Duration: 25, HadCommits: false},
+		{ExitCode: 1, Duration: 20, HadCommits: false},
+		{ExitCode: 0, Duration: 60, HadCommits: true},
+		{ExitCode: 1, Duration: 15, HadCommits: false},
+	})
+
+	lb, err := ps.Leaderboard(ctx)
+	if err != nil {
+		t.Fatalf("leaderboard: %v", err)
+	}
+
+	if lb.TotalAgents != 2 {
+		t.Fatalf("expected 2 agents, got %d", lb.TotalAgents)
+	}
+
+	if len(lb.MVPs) == 0 {
+		t.Error("expected mvp-agent in MVPs tier")
+	} else if lb.MVPs[0].Agent != "mvp-agent" {
+		t.Errorf("expected mvp-agent as MVP, got %q", lb.MVPs[0].Agent)
+	}
+
+	if len(lb.FiringLine) == 0 {
+		t.Error("expected broken-agent in FiringLine tier")
+	} else if lb.FiringLine[0].Agent != "broken-agent" {
+		t.Errorf("expected broken-agent as FiringLine, got %q", lb.FiringLine[0].Agent)
+	}
+}
+
+// makeResults builds a slice of RunResults with the specified success and commit rates.
+func makeResults(n, startExitCode int, successRate, commitRate float64) []RunResult {
+	results := make([]RunResult, n)
+	successCount := int(float64(n) * successRate)
+	commitCount := int(float64(n) * commitRate)
+	for i := range results {
+		results[i] = RunResult{
+			Duration:   60.0,
+			ExitCode:   1,
+			HadCommits: i < commitCount,
+		}
+		if i < successCount {
+			results[i].ExitCode = 0
+		}
+		_ = startExitCode // unused, kept for signature clarity
+	}
+	return results
+}
+
+// makeWasteResults builds a slice where wasteRate fraction are short no-op runs.
+func makeWasteResults(n int, wasteRate float64) []RunResult {
+	results := make([]RunResult, n)
+	wasteCount := int(float64(n) * wasteRate)
+	for i := range results {
+		if i < wasteCount {
+			results[i] = RunResult{Duration: 3.0, ExitCode: 0, HadCommits: false}
+		} else {
+			results[i] = RunResult{Duration: 90.0, ExitCode: 0, HadCommits: true}
+		}
+	}
+	return results
+}
+
 // testAdaptiveCooldownForDispatch verifies that the dispatcher integration point works.
 func TestAdaptiveCooldown_DefaultFallback(t *testing.T) {
 	d, ctx := testSetup(t)

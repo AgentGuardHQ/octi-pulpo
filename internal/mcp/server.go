@@ -47,12 +47,13 @@ type RPCError struct {
 
 // Server is the Octi Pulpo MCP server.
 type Server struct {
-	mem         *memory.Store
-	coord       *coordination.Engine
-	router      *routing.Router
-	dispatcher  *dispatch.Dispatcher
-	sprintStore *sprint.Store
-	benchmark   *dispatch.BenchmarkTracker
+	mem          *memory.Store
+	coord        *coordination.Engine
+	router       *routing.Router
+	dispatcher   *dispatch.Dispatcher
+	sprintStore  *sprint.Store
+	benchmark    *dispatch.BenchmarkTracker
+	profileStore *dispatch.ProfileStore
 }
 
 // New creates an MCP server backed by the given memory and coordination engines.
@@ -73,6 +74,11 @@ func (s *Server) SetSprintStore(ss *sprint.Store) {
 // SetBenchmark enables throughput metrics MCP tools.
 func (s *Server) SetBenchmark(bt *dispatch.BenchmarkTracker) {
 	s.benchmark = bt
+}
+
+// SetProfileStore enables the leaderboard MCP tool.
+func (s *Server) SetProfileStore(ps *dispatch.ProfileStore) {
+	s.profileStore = ps
 }
 
 // Serve runs the MCP server on stdio (stdin/stdout JSON-RPC).
@@ -352,6 +358,17 @@ func (s *Server) handleToolCall(req Request) Response {
 		data, _ := json.Marshal(metrics)
 		return textResult(req.ID, string(data))
 
+	case "leaderboard":
+		if s.profileStore == nil {
+			return errorResp(req.ID, -32000, "profile store not initialized")
+		}
+		result, err := s.profileStore.Leaderboard(ctx)
+		if err != nil {
+			return errorResp(req.ID, -32000, err.Error())
+		}
+		data, _ := json.Marshal(result)
+		return textResult(req.ID, string(data))
+
 	default:
 		return errorResp(req.ID, -32601, fmt.Sprintf("unknown tool: %s", params.Name))
 	}
@@ -551,6 +568,14 @@ func toolDefs() []ToolDef {
 		{
 			Name:        "benchmark_status",
 			Description: "Return swarm throughput metrics: PRs/hour, commits/run, waste %, budget efficiency, active agents, queue depth, pass rate.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		{
+			Name:        "leaderboard",
+			Description: "Rank all agents by productivity. Returns four tiers — MVP (🏆), Reliable (✅), Underperforming (⚠️), Firing Line (🔴) — with success rate, commit rate, waste %, and run count per agent.",
 			InputSchema: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},

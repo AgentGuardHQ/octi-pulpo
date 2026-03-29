@@ -87,6 +87,7 @@ func main() {
 	server.SetDispatcher(dispatcher)
 	server.SetSprintStore(sprintStore)
 	server.SetBenchmark(benchmark)
+	server.SetProfileStore(profiles)
 
 	// Optional HTTP mode: run webhook server alongside MCP
 	httpPort := os.Getenv("OCTI_HTTP_PORT")
@@ -95,6 +96,7 @@ func main() {
 		ws := dispatch.NewWebhookServer(dispatcher, secretFile)
 		ws.SetSprintStore(sprintStore)
 		ws.SetBenchmark(benchmark)
+		ws.SetProfileStore(profiles)
 
 		// Daemon mode: if OCTI_DAEMON=1 or stdin is not a terminal, run HTTP only (no MCP stdio)
 		daemon := os.Getenv("OCTI_DAEMON") == "1"
