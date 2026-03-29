@@ -25,14 +25,50 @@ var driverTiers = map[string]CostTier{
 	// Local ($0)
 	"ollama":   TierLocal,
 	"nemotron": TierLocal,
-	// Subscription (browser-based)
+	// Subscription (browser-based, already paying)
 	"openclaw": TierSubscription,
-	// CLI (metered)
+	// CLI (metered subscription)
 	"claude-code": TierCLI,
 	"copilot":     TierCLI,
 	"codex":       TierCLI,
 	"gemini":      TierCLI,
 	"goose":       TierCLI,
+	// API (per-token billing)
+	"claude-api": TierAPI,
+	"openai-api": TierAPI,
+	"gemini-api": TierAPI,
+}
+
+// taskTypeFloors maps task-type keywords to the minimum cost tier appropriate
+// for that kind of work. Tiers below the floor are skipped even if healthy.
+//
+// Ordering matters: first match wins. More specific entries should come first.
+var taskTypeFloors = []struct {
+	keywords []string
+	floor    CostTier
+}{
+	// Coding work requires a capable code-aware driver — CLI minimum.
+	{
+		keywords: []string{
+			"code-review", "coding", "refactor", "commit", "pr", "merge",
+			"senior", "qa", "reviewer", "merger", "engineer", "test", "debug",
+		},
+		floor: TierCLI,
+	},
+	// Artifact and research tasks work well with subscription browser drivers.
+	{
+		keywords: []string{
+			"artifact", "briefing", "research", "notebook", "report", "document",
+		},
+		floor: TierSubscription,
+	},
+	// Triage and classification are cheap — local models are sufficient.
+	{
+		keywords: []string{
+			"triage", "classify", "classification", "summarize", "label", "simple",
+		},
+		floor: TierLocal,
+	},
 }
 
 // DriverHealth represents the runtime health of a single driver.
@@ -48,6 +84,7 @@ type DriverHealth struct {
 type RouteDecision struct {
 	Driver     string   `json:"driver"`
 	Tier       string   `json:"tier"`
+	Floor      string   `json:"floor,omitempty"` // minimum tier enforced by task type
 	Confidence float64  `json:"confidence"`
 	Reason     string   `json:"reason"`
 	Fallbacks  []string `json:"fallbacks"`
@@ -69,14 +106,17 @@ func NewRouter(healthDir string) *Router {
 	return &Router{healthDir: healthDir}
 }
 
-// Recommend returns the cheapest healthy driver for the given task.
-// The budget parameter controls which cost tiers are considered:
-//   - "low"    -> local only
-//   - "medium" -> local + subscription + cli
-//   - "high"   -> all tiers
-//   - ""       -> all tiers (default)
+// Recommend returns the cheapest healthy driver for the given task within the
+// allowed tier window [floor, ceiling]:
+//   - floor (from taskType): minimum tier appropriate for the work
+//   - ceiling (from budget): "low" → local, "medium" → cli, "high"/"" → api
+//
+// Example: a "code-review" task with budget "high" uses the window [cli, api].
+// Tiers below the floor are skipped even if healthy — routing ollama to a
+// coding task would produce poor results regardless of availability.
 func (r *Router) Recommend(taskType, budget string) RouteDecision {
-	maxTier := maxTierForBudget(budget)
+	floor := taskFloor(taskType)
+	ceiling := maxTierForBudget(budget)
 	drivers := DiscoverDrivers(r.healthDir)
 
 	// Build health map from discovered drivers.
@@ -89,10 +129,13 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 	var chosen *RouteDecision
 	var fallbacks []string
 
-	// Walk tiers in cost order: cheapest first.
+	// Walk tiers in cost order within the [floor, ceiling] window.
 	for _, tier := range tierOrder {
-		if tierIndex(tier) > tierIndex(maxTier) {
-			break
+		if tierIndex(tier) < tierIndex(floor) {
+			continue // below task-type floor
+		}
+		if tierIndex(tier) > tierIndex(ceiling) {
+			break // above budget ceiling
 		}
 		for name, health := range healthMap {
 			driverTier := tierFor(name)
@@ -112,8 +155,9 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 				chosen = &RouteDecision{
 					Driver:     name,
 					Tier:       string(tier),
+					Floor:      string(floor),
 					Confidence: confidence,
-					Reason:     fmt.Sprintf("cheapest healthy driver (tier: %s, state: %s)", tier, health.CircuitState),
+					Reason:     fmt.Sprintf("cheapest healthy driver in window [%s, %s] (state: %s)", floor, ceiling, health.CircuitState),
 				}
 			} else {
 				fallbacks = append(fallbacks, name)
@@ -124,7 +168,8 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 	if chosen == nil {
 		return RouteDecision{
 			Skip:   true,
-			Reason: "all drivers exhausted — circuit breakers OPEN",
+			Floor:  string(floor),
+			Reason: fmt.Sprintf("all drivers exhausted in window [%s, %s]", floor, ceiling),
 		}
 	}
 
@@ -135,6 +180,21 @@ func (r *Router) Recommend(taskType, budget string) RouteDecision {
 // HealthReport returns current health status for all discovered drivers.
 func (r *Router) HealthReport() []DriverHealth {
 	return ReadAllHealth(r.healthDir)
+}
+
+// taskFloor returns the minimum cost tier appropriate for the given task type.
+// Tiers below the floor produce poor results for the task regardless of health.
+// Unknown task types default to TierLocal so all healthy drivers are candidates.
+func taskFloor(taskType string) CostTier {
+	lower := strings.ToLower(taskType)
+	for _, entry := range taskTypeFloors {
+		for _, kw := range entry.keywords {
+			if strings.Contains(lower, kw) {
+				return entry.floor
+			}
+		}
+	}
+	return TierLocal // default: start from cheapest
 }
 
 // maxTierForBudget returns the highest tier to consider for a budget level.

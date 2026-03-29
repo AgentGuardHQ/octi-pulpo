@@ -246,3 +246,167 @@ func TestDiscoverDrivers_NonexistentDir(t *testing.T) {
 		t.Fatalf("expected nil for nonexistent dir, got %v", drivers)
 	}
 }
+
+// --- Task-type floor tests ---
+
+func TestRecommend_CodingTaskSkipsLocal(t *testing.T) {
+	dir := t.TempDir()
+	// Local driver is healthy, but coding tasks require CLI minimum
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("code-review", "high")
+
+	if dec.Skip {
+		t.Fatal("expected a recommendation, got Skip")
+	}
+	if dec.Driver == "ollama" {
+		t.Fatal("ollama should be skipped for code-review (below CLI floor)")
+	}
+	if dec.Tier != string(TierCLI) {
+		t.Fatalf("expected CLI tier for code-review, got %s", dec.Tier)
+	}
+	if dec.Floor != string(TierCLI) {
+		t.Fatalf("expected Floor=cli for code-review, got %s", dec.Floor)
+	}
+}
+
+func TestRecommend_CodingTaskCascadesToAPI(t *testing.T) {
+	dir := t.TempDir()
+	// All CLI drivers OPEN — cascade to API tier
+	writeHealth(t, dir, "claude-code", HealthFile{State: "OPEN", Failures: 5})
+	writeHealth(t, dir, "copilot", HealthFile{State: "OPEN", Failures: 3})
+	writeHealth(t, dir, "claude-api", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("pr-merge", "high")
+
+	if dec.Skip {
+		t.Fatalf("expected cascade to API tier, got Skip")
+	}
+	if dec.Driver != "claude-api" {
+		t.Fatalf("expected claude-api (API tier fallback), got %s", dec.Driver)
+	}
+	if dec.Tier != string(TierAPI) {
+		t.Fatalf("expected tier api, got %s", dec.Tier)
+	}
+}
+
+func TestRecommend_TriageTaskUsesLocal(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("triage", "high")
+
+	if dec.Skip {
+		t.Fatal("expected recommendation, got Skip")
+	}
+	// triage floor = local, so ollama is the cheapest healthy option
+	if dec.Driver != "ollama" {
+		t.Fatalf("expected ollama (local tier for triage), got %s", dec.Driver)
+	}
+}
+
+func TestRecommend_APITierDriver(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "claude-api", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "openai-api", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("burst-task", "high")
+
+	if dec.Skip {
+		t.Fatal("expected recommendation, got Skip")
+	}
+	if dec.Tier != string(TierAPI) {
+		t.Fatalf("expected API tier, got %s", dec.Tier)
+	}
+	// Both are API drivers — either is valid, but one should be fallback
+	if dec.Driver == "" {
+		t.Fatal("expected a driver name, got empty")
+	}
+	if len(dec.Fallbacks) == 0 {
+		t.Fatal("expected the other api driver as fallback")
+	}
+}
+
+func TestRecommend_APITierBudgetCeiling(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-api", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	// low budget: ceiling = local, so API driver should not be reachable
+	dec := r.Recommend("simple-task", "low")
+
+	if dec.Skip {
+		t.Fatal("expected ollama at low budget, got Skip")
+	}
+	if dec.Driver != "ollama" {
+		t.Fatalf("expected ollama (local tier within budget), got %s", dec.Driver)
+	}
+	for _, fb := range dec.Fallbacks {
+		if fb == "claude-api" {
+			t.Fatal("claude-api should not appear as fallback at low budget")
+		}
+	}
+}
+
+func TestRecommend_CodingTaskLowBudget_Skip(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	// coding floor = cli, but low budget ceiling = local → empty window → skip
+	dec := r.Recommend("code-review", "low")
+
+	if !dec.Skip {
+		t.Fatalf("expected Skip (floor cli > ceiling local), got driver=%s", dec.Driver)
+	}
+}
+
+func TestRecommend_UnknownTaskDefaultsToLocalFloor(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("some-unknown-task-type", "high")
+
+	if dec.Skip {
+		t.Fatal("expected recommendation, got Skip")
+	}
+	// Unknown task → default floor = local → ollama wins (cheapest)
+	if dec.Driver != "ollama" {
+		t.Fatalf("expected ollama (default local floor), got %s", dec.Driver)
+	}
+}
+
+func TestTaskFloor(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected CostTier
+	}{
+		{"code-review", TierCLI},
+		{"coding task for PR", TierCLI},
+		{"senior-agent", TierCLI},
+		{"qa-agent", TierCLI},
+		{"pr-merger-agent", TierCLI},
+		{"triage tickets", TierLocal},
+		{"classify issue", TierLocal},
+		{"research briefing", TierSubscription},
+		{"notebook report", TierSubscription},
+		{"unknown-thing", TierLocal},
+		{"", TierLocal},
+	}
+	for _, c := range cases {
+		got := taskFloor(c.input)
+		if got != c.expected {
+			t.Errorf("taskFloor(%q) = %s, want %s", c.input, got, c.expected)
+		}
+	}
+}
