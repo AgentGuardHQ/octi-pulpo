@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -229,6 +230,185 @@ func TestHealthReport(t *testing.T) {
 		t.Fatalf("expected OPEN for copilot, got %s", cp.CircuitState)
 	} else if cp.Failures != 5 {
 		t.Fatalf("expected 5 failures for copilot, got %d", cp.Failures)
+	}
+}
+
+// --- Task-type capability floor tests ---
+
+func TestRecommend_CodingTaskSkipsLocalTier(t *testing.T) {
+	dir := t.TempDir()
+	// Only a local driver available — coding tasks require CLI tier minimum
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("coding", "high")
+
+	if !dec.Skip {
+		t.Fatalf("expected Skip: coding task needs CLI tier, only local available; got driver=%s tier=%s", dec.Driver, dec.Tier)
+	}
+	if dec.MinTier != string(TierCLI) {
+		t.Fatalf("expected min_tier=cli, got %s", dec.MinTier)
+	}
+}
+
+func TestRecommend_CodingTaskUsesCLIOverLocal(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("code-review", "high")
+
+	if dec.Skip {
+		t.Fatal("expected recommendation, got Skip")
+	}
+	// Coding task floor is CLI; ollama (local) should be skipped
+	if dec.Tier != string(TierCLI) {
+		t.Fatalf("expected CLI tier for coding task, got %s", dec.Tier)
+	}
+	if dec.MinTier != string(TierCLI) {
+		t.Fatalf("expected min_tier=cli, got %s", dec.MinTier)
+	}
+}
+
+func TestRecommend_BrowsingTaskSkipsLocalUsesSubscription(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "openclaw", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("browse website and fill form", "high")
+
+	if dec.Skip {
+		t.Fatal("expected recommendation, got Skip")
+	}
+	// local (ollama) is below the floor; openclaw (subscription) is cheapest capable
+	if dec.Driver != "openclaw" {
+		t.Fatalf("expected openclaw (cheapest capable for browsing), got %s", dec.Driver)
+	}
+	if dec.Tier != string(TierSubscription) {
+		t.Fatalf("expected subscription tier, got %s", dec.Tier)
+	}
+}
+
+// TestRecommend_BrowsingTaskCascadesToCLI verifies that when the subscription driver
+// is exhausted, browsing tasks cascade to CLI (the next tier above the floor).
+func TestRecommend_BrowsingTaskCascadesToCLI(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "openclaw", HealthFile{State: "OPEN", Failures: 5})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("navigate to url", "high")
+
+	if dec.Skip {
+		t.Fatal("expected cascade from subscription to CLI, got Skip")
+	}
+	if dec.Driver != "claude-code" {
+		t.Fatalf("expected claude-code (cascade subscription→CLI), got %s", dec.Driver)
+	}
+	if dec.Tier != string(TierCLI) {
+		t.Fatalf("expected CLI tier, got %s", dec.Tier)
+	}
+}
+
+// TestRecommend_BrowsingTaskNoCapableDrivers ensures local-only setups skip for
+// browser tasks (local is below the subscription capability floor).
+func TestRecommend_BrowsingTaskNoCapableDrivers(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("screenshot a page", "high")
+
+	if !dec.Skip {
+		t.Fatalf("expected Skip: only local available, browsing needs subscription+ tier; got driver=%s", dec.Driver)
+	}
+	if dec.MinTier != string(TierSubscription) {
+		t.Fatalf("expected min_tier=subscription, got %s", dec.MinTier)
+	}
+}
+
+func TestRecommend_APITierDriver(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "anthropic", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	// CLI tier should be preferred over API tier (cheaper)
+	dec := r.Recommend("coding task", "high")
+
+	if dec.Skip {
+		t.Fatal("expected recommendation, got Skip")
+	}
+	if dec.Tier != string(TierCLI) {
+		t.Fatalf("expected CLI tier (cheaper than API), got %s", dec.Tier)
+	}
+	// anthropic should appear as a fallback
+	found := false
+	for _, fb := range dec.Fallbacks {
+		if fb == "anthropic" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected anthropic (api tier) as fallback")
+	}
+}
+
+func TestRecommend_APITierDirectWhenCLIExhausted(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "claude-code", HealthFile{State: "OPEN", Failures: 5})
+	writeHealth(t, dir, "anthropic", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("coding task", "high")
+
+	if dec.Skip {
+		t.Fatal("expected cascade to API tier, got Skip")
+	}
+	if dec.Driver != "anthropic" {
+		t.Fatalf("expected anthropic (only healthy driver), got %s", dec.Driver)
+	}
+	if dec.Tier != string(TierAPI) {
+		t.Fatalf("expected API tier, got %s", dec.Tier)
+	}
+}
+
+func TestRecommend_NemoclawLocalTier(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "nemoclaw", HealthFile{State: "CLOSED", Failures: 0})
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED", Failures: 0})
+
+	r := NewRouter(dir)
+	dec := r.Recommend("classify this text", "high")
+
+	if dec.Skip {
+		t.Fatal("expected recommendation, got Skip")
+	}
+	if dec.Driver != "nemoclaw" {
+		t.Fatalf("expected nemoclaw (local, cheapest), got %s", dec.Driver)
+	}
+	if dec.Tier != string(TierLocal) {
+		t.Fatalf("expected local tier, got %s", dec.Tier)
+	}
+}
+
+func TestRecommend_MinTierInSkipReason(t *testing.T) {
+	dir := t.TempDir()
+	writeHealth(t, dir, "ollama", HealthFile{State: "OPEN", Failures: 3})
+	// No CLI drivers available at all
+
+	r := NewRouter(dir)
+	dec := r.Recommend("implement feature", "high")
+
+	if !dec.Skip {
+		t.Fatalf("expected Skip, got driver=%s", dec.Driver)
+	}
+	if !strings.Contains(dec.Reason, "cli") {
+		t.Fatalf("expected reason to mention cli tier, got: %s", dec.Reason)
 	}
 }
 
