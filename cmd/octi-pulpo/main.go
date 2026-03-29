@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/AgentGuardHQ/octi-pulpo/internal/coordination"
+	"github.com/AgentGuardHQ/octi-pulpo/internal/crosssquad"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/dispatch"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/mcp"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/memory"
@@ -83,11 +84,14 @@ func main() {
 	// Set up benchmark tracker
 	benchmark := dispatch.NewBenchmarkTracker(rdb, namespace)
 
+	requestStore := crosssquad.New(rdb, namespace)
+
 	server := mcp.New(mem, coord, router)
 	server.SetDispatcher(dispatcher)
 	server.SetSprintStore(sprintStore)
 	server.SetBenchmark(benchmark)
 	server.SetProfileStore(profiles)
+	server.SetRequestStore(requestStore)
 
 	// Optional HTTP mode: run webhook server alongside MCP
 	httpPort := os.Getenv("OCTI_HTTP_PORT")

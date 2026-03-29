@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AgentGuardHQ/octi-pulpo/internal/coordination"
+	"github.com/AgentGuardHQ/octi-pulpo/internal/crosssquad"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/dispatch"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/memory"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/routing"
@@ -47,13 +48,14 @@ type RPCError struct {
 
 // Server is the Octi Pulpo MCP server.
 type Server struct {
-	mem         *memory.Store
-	coord       *coordination.Engine
-	router      *routing.Router
-	dispatcher  *dispatch.Dispatcher
-	sprintStore *sprint.Store
-	benchmark   *dispatch.BenchmarkTracker
-	profiles    *dispatch.ProfileStore
+	mem          *memory.Store
+	coord        *coordination.Engine
+	router       *routing.Router
+	dispatcher   *dispatch.Dispatcher
+	sprintStore  *sprint.Store
+	benchmark    *dispatch.BenchmarkTracker
+	profiles     *dispatch.ProfileStore
+	requestStore *crosssquad.Store
 }
 
 // New creates an MCP server backed by the given memory and coordination engines.
@@ -79,6 +81,11 @@ func (s *Server) SetBenchmark(bt *dispatch.BenchmarkTracker) {
 // SetProfileStore enables the agent leaderboard MCP tool.
 func (s *Server) SetProfileStore(ps *dispatch.ProfileStore) {
 	s.profiles = ps
+}
+
+// SetRequestStore enables cross-squad request routing MCP tools.
+func (s *Server) SetRequestStore(rs *crosssquad.Store) {
+	s.requestStore = rs
 }
 
 // Serve runs the MCP server on stdio (stdin/stdout JSON-RPC).
@@ -368,6 +375,87 @@ func (s *Server) handleToolCall(req Request) Response {
 		}
 		return textResult(req.ID, dispatch.FormatLeaderboard(entries))
 
+	case "request_work":
+		if s.requestStore == nil {
+			return errorResp(req.ID, -32000, "request store not initialized")
+		}
+		var args struct {
+			FromAgent       string `json:"from_agent"`
+			ToSquad         string `json:"to_squad"`
+			Type            string `json:"type"`
+			Description     string `json:"description"`
+			Priority        int    `json:"priority"`
+			DeadlineMinutes int    `json:"deadline_minutes"`
+		}
+		json.Unmarshal(params.Arguments, &args)
+		if args.ToSquad == "" || args.Description == "" {
+			return errorResp(req.ID, -32602, "to_squad and description are required")
+		}
+		if args.FromAgent == "" {
+			args.FromAgent = agentID
+		}
+		if args.Type == "" {
+			args.Type = "task"
+		}
+		req2, err := s.requestStore.Submit(ctx, args.FromAgent, args.ToSquad, args.Type, args.Description, args.Priority, args.DeadlineMinutes)
+		if err != nil {
+			return errorResp(req.ID, -32000, err.Error())
+		}
+		msg := fmt.Sprintf("Request %s submitted to %s squad. Type: %s. Priority: %d.", req2.ID, req2.ToSquad, req2.Type, req2.Priority)
+		if req2.DeadlineMinutes > 0 {
+			msg += fmt.Sprintf(" Deadline: %dm.", req2.DeadlineMinutes)
+		}
+		return textResult(req.ID, msg)
+
+	case "check_requests":
+		if s.requestStore == nil {
+			return errorResp(req.ID, -32000, "request store not initialized")
+		}
+		var args struct {
+			Squad string `json:"squad"`
+		}
+		json.Unmarshal(params.Arguments, &args)
+		if args.Squad == "" {
+			return errorResp(req.ID, -32602, "squad is required")
+		}
+		requests, err := s.requestStore.Pending(ctx, args.Squad)
+		if err != nil {
+			return errorResp(req.ID, -32000, err.Error())
+		}
+		if len(requests) == 0 {
+			return textResult(req.ID, fmt.Sprintf("No pending requests for %s squad.", args.Squad))
+		}
+		data, _ := json.Marshal(requests)
+		return textResult(req.ID, string(data))
+
+	case "fulfill_request":
+		if s.requestStore == nil {
+			return errorResp(req.ID, -32000, "request store not initialized")
+		}
+		var args struct {
+			RequestID string `json:"request_id"`
+			Result    string `json:"result"`
+			PRNumber  int    `json:"pr_number"`
+		}
+		json.Unmarshal(params.Arguments, &args)
+		if args.RequestID == "" || args.Result == "" {
+			return errorResp(req.ID, -32602, "request_id and result are required")
+		}
+		fulfilled, err := s.requestStore.Fulfill(ctx, args.RequestID, agentID, args.Result, args.PRNumber)
+		if err != nil {
+			return errorResp(req.ID, -32000, err.Error())
+		}
+		// Notify the requesting agent via coord_signal.
+		payload := fmt.Sprintf("request %s fulfilled by %s: %s", args.RequestID, agentID, args.Result)
+		if err := s.coord.Broadcast(ctx, agentID, "completed", payload); err != nil {
+			fmt.Fprintf(os.Stderr, "broadcast fulfill signal: %v\n", err)
+		}
+		msg := fmt.Sprintf("Request %s fulfilled. Notified %s.", fulfilled.ID, fulfilled.FromAgent)
+		if fulfilled.PRNumber > 0 {
+			msg += fmt.Sprintf(" PR: #%d.", fulfilled.PRNumber)
+		}
+		return textResult(req.ID, msg)
+
 	default:
 		return errorResp(req.ID, -32601, fmt.Sprintf("unknown tool: %s", params.Name))
 	}
@@ -578,6 +666,46 @@ func toolDefs() []ToolDef {
 			InputSchema: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
+			},
+		},
+		{
+			Name:        "request_work",
+			Description: "Request work from another squad. The request is stored in Redis and the target squad's next dispatch tick will pick it up. Use this instead of doing the work yourself when it belongs to another squad's expertise.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"to_squad":         map[string]string{"type": "string", "description": "Target squad name (e.g. 'analytics', 'kernel', 'shellforge')"},
+					"type":             map[string]interface{}{"type": "string", "enum": []string{"report", "query", "review", "fix", "deploy", "task"}, "description": "Work type"},
+					"description":      map[string]string{"type": "string", "description": "What you need done"},
+					"priority":         map[string]interface{}{"type": "number", "description": "0=urgent, 1=high, 2=normal (default 2)"},
+					"deadline_minutes": map[string]interface{}{"type": "number", "description": "Optional: how soon you need it (minutes)"},
+					"from_agent":       map[string]string{"type": "string", "description": "Requesting agent name (defaults to AGENTGUARD_AGENT_NAME env var)"},
+				},
+				"required": []string{"to_squad", "description"},
+			},
+		},
+		{
+			Name:        "check_requests",
+			Description: "Check for incoming cross-squad work requests directed at your squad. Returns pending requests sorted by priority (urgent first).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"squad": map[string]string{"type": "string", "description": "Your squad name — check requests assigned to this squad"},
+				},
+				"required": []string{"squad"},
+			},
+		},
+		{
+			Name:        "fulfill_request",
+			Description: "Mark a cross-squad request as fulfilled. Broadcasts a completion signal back to the requesting agent via coord_signal.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"request_id": map[string]string{"type": "string", "description": "Request ID from check_requests"},
+					"result":     map[string]string{"type": "string", "description": "What you did / where the output is"},
+					"pr_number":  map[string]interface{}{"type": "number", "description": "Optional PR number if work resulted in a PR"},
+				},
+				"required": []string{"request_id", "result"},
 			},
 		},
 	}
