@@ -124,10 +124,12 @@ func main() {
 			evHandler := dispatch.NewSlackEventHandler(slackSecret, slackBotToken, dispatcher)
 			evHandler.SetSprintStore(sprintStore)
 			evHandler.SetBenchmark(benchmark)
+			evHandler.SetBudgetStore(budgetStore)
 			if slackURL := os.Getenv("SLACK_WEBHOOK_URL"); slackURL != "" {
 				evHandler.SetNotifier(dispatch.NewNotifier(slackURL))
 			}
 			ws.SetSlackEvents(evHandler)
+			ws.SetBudgetStore(budgetStore)
 			fmt.Fprintf(os.Stderr, "octi-pulpo: slack events handler registered on /slack/events\n")
 		}
 

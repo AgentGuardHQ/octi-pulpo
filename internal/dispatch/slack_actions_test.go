@@ -13,7 +13,26 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/AgentGuardHQ/octi-pulpo/internal/budget"
 )
+
+// newTestBudgetStore creates a BudgetStore sharing the dispatcher's Redis client and namespace.
+func newTestBudgetStore(t *testing.T, d *Dispatcher) *budget.BudgetStore {
+	t.Helper()
+	return budget.NewBudgetStore(d.RedisClient(), d.Namespace())
+}
+
+// testAgentBudget returns a minimal AgentBudget record for test setup.
+func testAgentBudget(agent string, paused bool) budget.AgentBudget {
+	return budget.AgentBudget{
+		Agent:              agent,
+		BudgetMonthlyCents: 1000,
+		SpentMonthlyCents:  950,
+		RunsThisMonth:      5,
+		Paused:             paused,
+	}
+}
 
 // --- Block Kit message tests ---
 
@@ -352,5 +371,94 @@ func TestRouteSlackAction_Context(t *testing.T) {
 		if !strings.Contains(ack, "testuser") {
 			t.Errorf("routeSlackAction(%q) ack missing actor: %q", actionID, ack)
 		}
+	}
+}
+
+// TestRouteSlackAction_BudgetOverride_NoBudgetStore verifies graceful noop when store missing.
+func TestRouteSlackAction_BudgetOverride_NoBudgetStore(t *testing.T) {
+	d, ctx := testSetup(t)
+	ws := NewWebhookServer(d, "")
+	// budgetStore intentionally not set
+
+	ack, err := ws.routeSlackAction(ctx, "budget_override", "octi-pulpo-sr", "cto")
+	if err != nil {
+		t.Fatalf("expected no error when budget store missing, got: %v", err)
+	}
+	if !strings.Contains(ack, "not configured") {
+		t.Errorf("expected 'not configured' message, got: %q", ack)
+	}
+}
+
+// TestRouteSlackAction_BudgetOverride_WithStore verifies a successful budget reset via action button.
+func TestRouteSlackAction_BudgetOverride_WithStore(t *testing.T) {
+	d, ctx := testSetup(t)
+	ws := NewWebhookServer(d, "")
+
+	// Wire a real budget store backed by the test Redis instance.
+	bs := newTestBudgetStore(t, d)
+	ws.SetBudgetStore(bs)
+
+	// Seed a paused budget record for the agent.
+	if err := bs.SetBudget(ctx, testAgentBudget("octi-pulpo-sr", true)); err != nil {
+		t.Fatalf("seed budget: %v", err)
+	}
+
+	ack, err := ws.routeSlackAction(ctx, "budget_override", "octi-pulpo-sr", "cto")
+	if err != nil {
+		t.Fatalf("routeSlackAction budget_override: %v", err)
+	}
+	if !strings.Contains(ack, "octi-pulpo-sr") {
+		t.Errorf("expected agent name in ack, got: %q", ack)
+	}
+	if !strings.Contains(ack, "cto") {
+		t.Errorf("expected actor in ack, got: %q", ack)
+	}
+
+	// Verify the budget is no longer paused.
+	b, err := bs.GetBudget(ctx, "octi-pulpo-sr")
+	if err != nil {
+		t.Fatalf("get budget after override: %v", err)
+	}
+	if b.Paused {
+		t.Error("expected agent to be unpaused after budget override")
+	}
+	if b.SpentMonthlyCents != 0 {
+		t.Errorf("expected spent=0 after reset, got %d", b.SpentMonthlyCents)
+	}
+}
+
+// TestNotifier_PostBudgetExhaustedAlert_ContainsButton verifies the alert has an Override button.
+func TestNotifier_PostBudgetExhaustedAlert_ContainsButton(t *testing.T) {
+	var received []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	ctx := context.Background()
+	n := NewNotifier(srv.URL)
+
+	if err := n.PostBudgetExhaustedAlert(ctx, "kernel-sr", 850, 1000); err != nil {
+		t.Fatalf("PostBudgetExhaustedAlert: %v", err)
+	}
+
+	raw := string(received)
+	if !strings.Contains(raw, "budget_override") {
+		t.Error("expected budget_override action_id in payload")
+	}
+	if !strings.Contains(raw, "kernel-sr") {
+		t.Error("expected agent name in payload")
+	}
+	if !strings.Contains(raw, "Override") {
+		t.Error("expected Override button text in payload")
+	}
+}
+
+// TestNotifier_PostBudgetExhaustedAlert_Noop verifies no-op when webhook not configured.
+func TestNotifier_PostBudgetExhaustedAlert_Noop(t *testing.T) {
+	n := NewNotifier("")
+	if err := n.PostBudgetExhaustedAlert(context.Background(), "agent", 100, 1000); err != nil {
+		t.Fatalf("expected no error for disabled notifier, got: %v", err)
 	}
 }

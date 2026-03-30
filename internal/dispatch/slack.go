@@ -287,6 +287,36 @@ func (n *Notifier) PostStuckAgentAlert(ctx context.Context, agent string, consec
 	return n.post(ctx, map[string]interface{}{"text": text})
 }
 
+// PostBudgetExhaustedAlert sends an interactive Block Kit message when an agent's
+// monthly budget is exhausted and it has been auto-paused. The message includes
+// an [Override] button that the CTO can click to immediately reset the budget
+// and resume dispatch. The button posts back to /slack/actions with action_id
+// "budget_override" and value set to the agent name.
+func (n *Notifier) PostBudgetExhaustedAlert(ctx context.Context, agent string, spentCents, budgetCents int) error {
+	if !n.Enabled() {
+		return nil
+	}
+
+	pct := 0
+	if budgetCents > 0 {
+		pct = spentCents * 100 / budgetCents
+	}
+	msg := fmt.Sprintf(
+		"💸 *Budget Exhausted: `%s`*\nSpent: $%.2f of $%.2f (%d%%) — agent auto-paused.\nDispatch is blocked until budget is reset or overridden.",
+		agent, float64(spentCents)/100, float64(budgetCents)/100, pct,
+	)
+
+	blocks := []map[string]interface{}{
+		blockSection(msg),
+		blockActions(
+			slackButton("budget_override", agent, "Override", "primary"),
+			slackButton("ignore_alert", agent, "Ignore", ""),
+		),
+	}
+
+	return n.postBlocks(ctx, blocks)
+}
+
 // PostInactiveSquadAlert sends a Slack alert when a squad has had no dispatch activity
 // for more than 24 hours.
 func (n *Notifier) PostInactiveSquadAlert(ctx context.Context, squad string, idleHours int) error {

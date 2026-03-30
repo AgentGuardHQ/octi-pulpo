@@ -117,6 +117,9 @@ func TestParseCommand(t *testing.T) {
 		{"pause cloud squad", "pause", "cloud squad"},
 		{"resume kernel", "resume", "kernel"},
 		{"resume kernel squad", "resume", "kernel squad"},
+		{"budget override octi-pulpo-sr", "budget_override", "octi-pulpo-sr"},
+		{"budget override kernel-sr", "budget_override", "kernel-sr"},
+		{"budget", "budget_override", ""},
 		{"unknown gibberish here", "", ""},
 		{"", "", ""},
 	}
@@ -239,7 +242,7 @@ func TestBuildHelpBlocks(t *testing.T) {
 	}
 	data, _ := json.Marshal(blocks)
 	text := string(data)
-	for _, keyword := range []string{"status", "constraint", "dispatch", "pause", "resume", "help"} {
+	for _, keyword := range []string{"status", "constraint", "dispatch", "pause", "resume", "budget override", "help"} {
 		if !strings.Contains(text, keyword) {
 			t.Errorf("help blocks missing keyword %q", keyword)
 		}
@@ -374,5 +377,25 @@ func TestWebhookServer_SetSlackEvents(t *testing.T) {
 	ws.mux.ServeHTTP(w, req)
 	if w.Code == http.StatusNotFound {
 		t.Error("expected /slack/events to be registered, got 404")
+	}
+}
+
+// TestBuildBudgetOverrideBlocks_NoBudgetStore verifies error text when no store is wired.
+func TestBuildBudgetOverrideBlocks_NoBudgetStore(t *testing.T) {
+	h := newTestSlackHandler()
+	blocks := h.buildBudgetOverrideBlocks(context.Background(), "octi-pulpo-sr")
+	data, _ := json.Marshal(blocks)
+	if !strings.Contains(string(data), "not configured") {
+		t.Errorf("expected 'not configured' error, got: %s", data)
+	}
+}
+
+// TestBuildBudgetOverrideBlocks_EmptyAgent verifies usage hint when agent is empty.
+func TestBuildBudgetOverrideBlocks_EmptyAgent(t *testing.T) {
+	h := newTestSlackHandler()
+	blocks := h.buildBudgetOverrideBlocks(context.Background(), "")
+	data, _ := json.Marshal(blocks)
+	if !strings.Contains(string(data), "Usage") {
+		t.Errorf("expected usage hint, got: %s", data)
 	}
 }
