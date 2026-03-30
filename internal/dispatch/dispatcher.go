@@ -17,6 +17,7 @@ type DispatchResult struct {
 	Agent     string `json:"agent"`      // agent name
 	Reason    string `json:"reason"`     // human-readable explanation
 	Driver    string `json:"driver"`     // chosen driver (empty if skipped)
+	Budget    string `json:"budget"`     // effective budget level: "low", "medium", "high"
 	QueuePos  int64  `json:"queue_pos"`  // position in queue (0 if not queued)
 	ClaimID   string `json:"claim_id"`   // coordination claim ID (empty if skipped)
 	Timestamp string `json:"timestamp"`
@@ -56,17 +57,27 @@ func NewDispatcher(rdb *redis.Client, router *routing.Router, coord *coordinatio
 }
 
 // Dispatch decides whether to run an agent based on event + coordination state.
+// It uses the dynamic budget level from the current swarm health — preventing
+// automatic escalation to expensive API-tier drivers when CLI-tier capacity exists.
 // The decision flow:
 //  1. Check cooldown -- has this agent been dispatched too recently?
 //  2. Check coord_claim -- is another instance already running/claimed?
-//  3. Check route_recommend -- is a healthy driver + budget available?
+//  3. Check route_recommend -- is a healthy driver available within budget?
 //  4. If yes to all: claim the task + enqueue to priority queue
 //  5. If driver exhausted: queue for later (backpressure, don't fail)
 //  6. Return the decision with reason
 func (d *Dispatcher) Dispatch(ctx context.Context, event Event, agentName string, priority int) (DispatchResult, error) {
+	return d.DispatchBudget(ctx, event, agentName, priority, d.router.DynamicBudget())
+}
+
+// DispatchBudget is like Dispatch but accepts an explicit budget level ("low", "medium", "high").
+// Use this when you need to override the automatic dynamic budget — e.g. for API-tier burst
+// capacity via a manual MCP trigger, or in tests that need deterministic routing.
+func (d *Dispatcher) DispatchBudget(ctx context.Context, event Event, agentName string, priority int, budget string) (DispatchResult, error) {
 	now := time.Now().UTC()
 	result := DispatchResult{
 		Agent:     agentName,
+		Budget:    budget,
 		Timestamp: now.Format(time.RFC3339),
 	}
 
@@ -97,8 +108,8 @@ func (d *Dispatcher) Dispatch(ctx context.Context, event Event, agentName string
 		return result, nil
 	}
 
-	// 3. Check driver health/budget
-	routeDecision := d.router.Recommend(agentName, "high")
+	// 3. Check driver health/budget — budget level determined by caller (dynamic or explicit)
+	routeDecision := d.router.Recommend(agentName, budget)
 
 	if routeDecision.Skip {
 		// All drivers exhausted -- queue for later (backpressure)

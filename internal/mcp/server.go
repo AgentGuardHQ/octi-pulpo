@@ -310,6 +310,7 @@ func (s *Server) handleToolCall(req Request) Response {
 		var args struct {
 			Agent    string `json:"agent"`
 			Priority int    `json:"priority"`
+			Budget   string `json:"budget"` // optional: "low", "medium", "high"; empty = dynamic
 		}
 		json.Unmarshal(params.Arguments, &args)
 		if args.Agent == "" {
@@ -320,7 +321,13 @@ func (s *Server) handleToolCall(req Request) Response {
 			Source:  "mcp",
 			Payload: map[string]string{"triggered_by": agentID},
 		}
-		result, err := s.dispatcher.Dispatch(ctx, event, args.Agent, args.Priority)
+		var result dispatch.DispatchResult
+		var err error
+		if args.Budget != "" {
+			result, err = s.dispatcher.DispatchBudget(ctx, event, args.Agent, args.Priority, args.Budget)
+		} else {
+			result, err = s.dispatcher.Dispatch(ctx, event, args.Agent, args.Priority)
+		}
 		if err != nil {
 			return errorResp(req.ID, -32000, err.Error())
 		}
