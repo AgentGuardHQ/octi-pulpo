@@ -218,6 +218,77 @@ func (n *Notifier) PostDriverAlert(ctx context.Context, driverName string, failu
 	return n.postBlocks(ctx, blocks)
 }
 
+// PostDailyBriefing sends a structured daily briefing to Slack:
+// what shipped (open PRs), decisions needed (P0 open items + blocked items),
+// pass rate, and a snapshot of driver health.
+// This is the data-layer prep for the eventual NotebookLM export (issue #10).
+func (n *Notifier) PostDailyBriefing(ctx context.Context, b DailyBriefing) error {
+	if !n.Enabled() {
+		return nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("*📋 Daily CTO Briefing — %s*\n", b.Date))
+
+	// Pass rate
+	if b.WorkerOK+b.WorkerFail > 0 {
+		sb.WriteString(fmt.Sprintf("Pass rate: *%.1f%%* (%d ok / %d fail)\n", b.PassRate, b.WorkerOK, b.WorkerFail))
+	}
+
+	// Driver health
+	var driverParts []string
+	for _, d := range b.Drivers {
+		icon := "🟢"
+		if d.CircuitState == "OPEN" {
+			icon = "🔴"
+		} else if d.CircuitState == "HALF" {
+			icon = "🟡"
+		}
+		driverParts = append(driverParts, fmt.Sprintf("%s `%s`", icon, d.Name))
+	}
+	if len(driverParts) > 0 {
+		sb.WriteString("Drivers: " + strings.Join(driverParts, " · ") + "\n")
+	}
+
+	// What shipped (PRs in flight or done)
+	if len(b.ShippedPRs) > 0 {
+		sb.WriteString("\n*✅ What Shipped (PRs)*\n")
+		for _, item := range b.ShippedPRs {
+			prURL := fmt.Sprintf("https://github.com/%s/pull/%d", item.Repo, item.PRNumber)
+			sb.WriteString(fmt.Sprintf("  • <%s|PR #%d>: %s\n", prURL, item.PRNumber, item.Title))
+		}
+	}
+
+	// Decisions needed — P0 open items
+	if len(b.OpenP0s) > 0 {
+		sb.WriteString("\n*🔴 Decisions Needed (P0 Open)*\n")
+		for _, item := range b.OpenP0s {
+			issueURL := fmt.Sprintf("https://github.com/%s/issues/%d", item.Repo, item.IssueNum)
+			sb.WriteString(fmt.Sprintf("  • <%s|%s#%d>: %s\n", issueURL, item.Repo, item.IssueNum, item.Title))
+		}
+	}
+
+	// Blocked items
+	if len(b.Blocked) > 0 {
+		sb.WriteString("\n*🚧 Blocked*\n")
+		for _, item := range b.Blocked {
+			issueURL := fmt.Sprintf("https://github.com/%s/issues/%d", item.Repo, item.IssueNum)
+			sb.WriteString(fmt.Sprintf("  • <%s|%s#%d>: %s (needs: %v)\n", issueURL, item.Repo, item.IssueNum, item.Title, item.DependsOn))
+		}
+	}
+
+	blocks := []map[string]interface{}{
+		blockSection(sb.String()),
+		blockActions(
+			slackButton("view_sprint", b.Date, "View Sprint", "primary"),
+			slackButton("view_blockers", b.Date, "View Blockers", ""),
+			slackButton("reprioritize", b.Date, "Reprioritize", ""),
+		),
+	}
+
+	return n.postBlocks(ctx, blocks)
+}
+
 // PostDailyStandup posts a unified standup summary for all squads to Slack.
 func (n *Notifier) PostDailyStandup(ctx context.Context, entries []standup.Entry) error {
 	if !n.Enabled() {

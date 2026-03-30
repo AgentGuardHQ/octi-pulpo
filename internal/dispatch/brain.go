@@ -60,6 +60,7 @@ type Brain struct {
 	lastDashboard     time.Time
 	dashboardPeriod   time.Duration
 	lastStandupDate   string // YYYY-MM-DD, guards once-per-day posting
+	lastBriefingDate  string // YYYY-MM-DD, guards once-per-day briefing
 	driversWereDown   bool   // tracks transition for edge-triggered alerts
 
 	// Self-heal dedup: tracks when each agent/squad was last alerted to avoid
@@ -145,7 +146,10 @@ func (b *Brain) Tick(ctx context.Context) {
 	// 6. Self-heal: stuck agents + inactive squads
 	b.maybeSelfHeal(ctx)
 
-	// 7. Constraint-driven dispatch (if sprint store is available)
+	// 7. Daily CTO briefing — what shipped, P0s, blockers (once per calendar day)
+	b.maybePostDailyBriefing(ctx)
+
+	// 8. Constraint-driven dispatch (if sprint store is available)
 	if b.sprintStore != nil {
 		constraint := b.identifyConstraint(ctx)
 		b.maybeNotifyConstraintChange(ctx, constraint)
@@ -421,6 +425,38 @@ func (b *Brain) checkInactiveSquads(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// maybePostDailyBriefing posts the daily CTO briefing (what shipped, P0s, blockers)
+// once per calendar day. It requires both Slack and sprint store to be configured.
+func (b *Brain) maybePostDailyBriefing(ctx context.Context) {
+	if b.notifier == nil || !b.notifier.Enabled() {
+		return
+	}
+	if b.sprintStore == nil {
+		return
+	}
+	today := time.Now().UTC().Format("2006-01-02")
+	if b.lastBriefingDate == today {
+		return
+	}
+
+	items, err := b.sprintStore.GetAll(ctx)
+	if err != nil {
+		b.log.Printf("daily briefing: get sprint items: %v", err)
+		return
+	}
+
+	drivers := b.dispatcher.router.AllHealth()
+	rdb := b.dispatcher.RedisClient()
+	ns := b.dispatcher.Namespace()
+
+	briefing := BuildDailyBriefing(ctx, rdb, ns, drivers, items)
+	if err := b.notifier.PostDailyBriefing(ctx, briefing); err != nil {
+		b.log.Printf("slack daily briefing: %v", err)
+		return
+	}
+	b.lastBriefingDate = today
 }
 
 // maybeNotifyConstraintChange fires edge-triggered Slack alerts when driver

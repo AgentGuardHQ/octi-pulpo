@@ -282,6 +282,19 @@ func (s *Server) handleToolCall(req Request) Response {
 		data, _ := json.Marshal(report)
 		return textResult(req.ID, string(data))
 
+	case "briefing_read":
+		if s.sprintStore == nil || s.rdb == nil {
+			return errorResp(req.ID, -32000, "sprint store or redis not initialized")
+		}
+		items, err := s.sprintStore.GetAll(ctx)
+		if err != nil {
+			return errorResp(req.ID, -32000, err.Error())
+		}
+		drivers := s.router.AllHealth()
+		briefing := dispatch.BuildDailyBriefing(ctx, s.rdb, s.redisNS, drivers, items)
+		data, _ := json.Marshal(briefing)
+		return textResult(req.ID, string(data))
+
 	case "dispatch_event":
 		if s.dispatcher == nil {
 			return errorResp(req.ID, -32000, "dispatcher not initialized")
@@ -846,6 +859,14 @@ func toolDefs() []ToolDef {
 		{
 			Name:        "health_report",
 			Description: "Get current health status of all drivers in the swarm — circuit breaker state, failure counts, last success/failure timestamps, time since last success, and recommended actions per driver.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		{
+			Name:        "briefing_read",
+			Description: "Build and return today's CTO daily briefing: pass rate, driver health, shipped PRs, open P0 issues, and blocked items. This is the structured data layer for the daily Slack digest and eventual NotebookLM export.",
 			InputSchema: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
