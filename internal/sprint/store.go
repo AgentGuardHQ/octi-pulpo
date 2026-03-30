@@ -31,7 +31,10 @@ type SprintItem struct {
 	AssignTo  string `json:"assign_to"`   // agent name
 	Status    string `json:"status"`      // open, claimed, in_progress, pr_open, done
 	PRNumber  int    `json:"pr_number"`
-	UpdatedAt string `json:"updated_at"`
+	UpdatedAt    string   `json:"updated_at"`
+	GoalID       string   `json:"goal_id,omitempty"`
+	ParentGoalID string   `json:"parent_goal_id,omitempty"`
+	GoalAncestry []string `json:"goal_ancestry,omitempty"`
 }
 
 // Store manages sprint items in Redis, synced from GitHub issues.
