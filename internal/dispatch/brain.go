@@ -288,8 +288,9 @@ func (b *Brain) maybeNotifyConstraintChange(ctx context.Context, constraint Cons
 // identifyConstraint reads system state and returns the single most important constraint.
 // Checked in priority order — first match wins.
 func (b *Brain) identifyConstraint(ctx context.Context) Constraint {
-	// 1. All drivers exhausted
-	decision := b.dispatcher.router.Recommend("brain-constraint-check", "high")
+	// 1. All drivers exhausted (within current budget policy; "high"/API tier is never
+	// assumed available automatically — use DynamicBudget to stay within economics)
+	decision := b.dispatcher.router.Recommend("brain-constraint-check", b.dispatcher.router.DynamicBudget())
 	if decision.Skip {
 		return Constraint{
 			Type:        "all_drivers_down",
@@ -593,8 +594,8 @@ func (b *Brain) checkBackpressureRecovery(ctx context.Context) {
 		return
 	}
 
-	// Check if drivers are healthy now by attempting a route recommendation
-	decision := b.dispatcher.router.Recommend("brain-check", "high")
+	// Check if drivers are healthy now — use dynamic budget to avoid API-tier false positives
+	decision := b.dispatcher.router.Recommend("brain-check", b.dispatcher.router.DynamicBudget())
 	if decision.Skip {
 		// Drivers still exhausted, nothing to do
 		return
