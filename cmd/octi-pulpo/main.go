@@ -6,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/AgentGuardHQ/octi-pulpo/internal/budget"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/coordination"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/dispatch"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/mcp"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/memory"
+	"github.com/AgentGuardHQ/octi-pulpo/internal/org"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/routing"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/sprint"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/standup"
@@ -84,6 +86,16 @@ func main() {
 	// Set up benchmark tracker
 	benchmark := dispatch.NewBenchmarkTracker(rdb, namespace)
 
+	// Set up org store
+	orgStore := org.NewOrgStore(rdb, namespace)
+
+	// Set up budget store
+	budgetStore := budget.NewBudgetStore(rdb, namespace)
+	dispatcher.SetBudget(budgetStore)
+
+	// Set up goal store
+	goalStore := sprint.NewGoalStore(rdb, namespace)
+
 	// Set up standup store
 	standupStore := standup.New(rdb, namespace)
 
@@ -92,6 +104,9 @@ func main() {
 	server.SetSprintStore(sprintStore)
 	server.SetStandupStore(standupStore)
 	server.SetBenchmark(benchmark)
+	server.SetOrgStore(orgStore)
+	server.SetBudgetStore(budgetStore)
+	server.SetGoalStore(goalStore)
 	server.SetProfileStore(profiles)
 	server.SetRedis(rdb, namespace)
 
