@@ -10,9 +10,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AgentGuardHQ/octi-pulpo/internal/budget"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/coordination"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/dispatch"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/memory"
+	"github.com/AgentGuardHQ/octi-pulpo/internal/org"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/routing"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/sprint"
 	"github.com/AgentGuardHQ/octi-pulpo/internal/standup"
@@ -58,6 +60,9 @@ type Server struct {
 	standupStore *standup.Store
 	benchmark    *dispatch.BenchmarkTracker
 	profiles     *dispatch.ProfileStore
+	orgStore     *org.OrgStore
+	budgetStore  *budget.BudgetStore
+	goalStore    *sprint.GoalStore
 	rdb          *redis.Client
 	redisNS      string
 }
@@ -97,6 +102,18 @@ func (s *Server) SetProfileStore(ps *dispatch.ProfileStore) {
 func (s *Server) SetRedis(rdb *redis.Client, ns string) {
 	s.rdb = rdb
 	s.redisNS = ns
+}
+
+func (s *Server) SetOrgStore(o *org.OrgStore) {
+	s.orgStore = o
+}
+
+func (s *Server) SetBudgetStore(b *budget.BudgetStore) {
+	s.budgetStore = b
+}
+
+func (s *Server) SetGoalStore(g *sprint.GoalStore) {
+	s.goalStore = g
 }
 
 // Serve runs the MCP server on stdio (stdin/stdout JSON-RPC).
@@ -582,6 +599,35 @@ func (s *Server) handleToolCall(req Request) Response {
 		return textResult(req.ID, string(data))
 
 
+	case "org_chart":
+		if s.orgStore == nil {
+			return errorResp(req.ID, -32000, "org store not initialized")
+		}
+		var args struct {
+			Agent string `json:"agent"`
+		}
+		json.Unmarshal(params.Arguments, &args)
+		if args.Agent != "" {
+			agent, err := s.orgStore.Get(ctx, args.Agent)
+			if err != nil {
+				return errorResp(req.ID, -32000, err.Error())
+			}
+			chain, _ := s.orgStore.ChainOfCommand(ctx, args.Agent)
+			reports, _ := s.orgStore.DirectReports(ctx, args.Agent)
+			result := map[string]interface{}{
+				"agent":          agent,
+				"chain":          chain,
+				"direct_reports": reports,
+			}
+			data, _ := json.Marshal(result)
+			return textResult(req.ID, string(data))
+		}
+		tree, err := org.PrintTree(ctx, s.orgStore)
+		if err != nil {
+			return errorResp(req.ID, -32000, err.Error())
+		}
+		return textResult(req.ID, tree)
+
 	default:
 		return errorResp(req.ID, -32601, fmt.Sprintf("unknown tool: %s", params.Name))
 	}
@@ -830,6 +876,19 @@ func toolDefs() []ToolDef {
 			InputSchema: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
+			},
+		},
+		{
+			Name:        "org_chart",
+			Description: "Return the agent org chart. Without arguments returns the full tree. With an agent name returns that agent's record, chain of command, and direct reports.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"agent": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional agent name to get specific record + chain of command",
+					},
+				},
 			},
 		},
 		{
