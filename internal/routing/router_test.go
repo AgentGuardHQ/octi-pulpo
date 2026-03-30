@@ -462,3 +462,86 @@ func TestDiscoverDrivers_NonexistentDir(t *testing.T) {
 		t.Fatalf("expected nil for nonexistent dir, got %v", drivers)
 	}
 }
+
+// ── DynamicBudget tests ────────────────────────────────────────────────────────
+
+func TestDynamicBudget_AllCLIHealthy_ReturnsMedium(t *testing.T) {
+	dir := t.TempDir()
+	tiers := cliOnly("claude-code", "copilot", "codex")
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED"})
+	writeHealth(t, dir, "copilot", HealthFile{State: "CLOSED"})
+	writeHealth(t, dir, "codex", HealthFile{State: "CLOSED"})
+
+	r := NewRouterWithTiers(dir, tiers)
+	got := r.DynamicBudget()
+	if got != "medium" {
+		t.Fatalf("expected medium (CLI healthy), got %s", got)
+	}
+}
+
+func TestDynamicBudget_SomeCLIOpen_ReturnsMedium(t *testing.T) {
+	// Even with one healthy CLI driver, budget stays at medium (don't escalate to API).
+	dir := t.TempDir()
+	tiers := cliOnly("claude-code", "copilot", "codex")
+	writeHealth(t, dir, "claude-code", HealthFile{State: "CLOSED"})
+	writeHealth(t, dir, "copilot", HealthFile{State: "OPEN"})
+	writeHealth(t, dir, "codex", HealthFile{State: "OPEN"})
+
+	r := NewRouterWithTiers(dir, tiers)
+	got := r.DynamicBudget()
+	if got != "medium" {
+		t.Fatalf("expected medium (claude-code still healthy), got %s", got)
+	}
+}
+
+func TestDynamicBudget_AllCLIOpen_ReturnsLow(t *testing.T) {
+	dir := t.TempDir()
+	tiers := cliOnly("claude-code", "copilot", "codex")
+	writeHealth(t, dir, "claude-code", HealthFile{State: "OPEN"})
+	writeHealth(t, dir, "copilot", HealthFile{State: "OPEN"})
+	writeHealth(t, dir, "codex", HealthFile{State: "OPEN"})
+
+	r := NewRouterWithTiers(dir, tiers)
+	got := r.DynamicBudget()
+	if got != "low" {
+		t.Fatalf("expected low (all CLI exhausted), got %s", got)
+	}
+}
+
+func TestDynamicBudget_HalfOpenCLI_ReturnsMedium(t *testing.T) {
+	// HALF-OPEN is not OPEN, so the driver is still considered available.
+	dir := t.TempDir()
+	tiers := cliOnly("claude-code")
+	writeHealth(t, dir, "claude-code", HealthFile{State: "HALF"})
+
+	r := NewRouterWithTiers(dir, tiers)
+	got := r.DynamicBudget()
+	if got != "medium" {
+		t.Fatalf("expected medium (HALF is not exhausted), got %s", got)
+	}
+}
+
+func TestDynamicBudget_NoCLITiers_ReturnsMedium(t *testing.T) {
+	// If no CLI drivers are registered (e.g. local-only test env),
+	// fall back to "medium" as safe default.
+	dir := t.TempDir()
+	tiers := map[string]CostTier{"ollama": TierLocal}
+
+	r := NewRouterWithTiers(dir, tiers)
+	got := r.DynamicBudget()
+	if got != "medium" {
+		t.Fatalf("expected medium (no CLI drivers registered), got %s", got)
+	}
+}
+
+func TestDynamicBudget_MissingHealthFile_DefaultsClosed_Medium(t *testing.T) {
+	// A CLI driver with no health file defaults to CLOSED (healthy).
+	dir := t.TempDir()
+	tiers := cliOnly("claude-code") // no health file written
+
+	r := NewRouterWithTiers(dir, tiers)
+	got := r.DynamicBudget()
+	if got != "medium" {
+		t.Fatalf("expected medium (missing health file = CLOSED), got %s", got)
+	}
+}

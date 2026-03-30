@@ -491,3 +491,120 @@ func TestRecentDispatches_Recorded(t *testing.T) {
 		t.Fatalf("expected recorded-agent, got %s", records[0].Agent)
 	}
 }
+
+// --- Budget-Aware Dispatch Tests ---
+
+// TestDispatch_BudgetFieldSet verifies that Dispatch() populates result.Budget
+// with a non-empty value derived from DynamicBudget().
+func TestDispatch_BudgetFieldSet(t *testing.T) {
+	d, ctx := testSetup(t)
+
+	event := Event{Type: EventManual, Source: "test"}
+	result, err := d.Dispatch(ctx, event, "budget-field-agent", 2)
+	if err != nil {
+		t.Fatalf("dispatch error: %v", err)
+	}
+	if result.Budget == "" {
+		t.Fatal("expected Budget field to be populated")
+	}
+	// testSetup writes claude-code as CLOSED (only CLI driver) → DynamicBudget = "medium"
+	if result.Budget != "medium" {
+		t.Fatalf("expected budget=medium (single healthy CLI driver), got %s", result.Budget)
+	}
+}
+
+// TestDispatchBudget_ExplicitHighAllowsAPITier verifies that DispatchBudget with
+// budget="high" can route to API-tier drivers.
+func TestDispatchBudget_ExplicitHighAllowsAPITier(t *testing.T) {
+	t.Helper()
+
+	redisURL := os.Getenv("OCTI_REDIS_URL")
+	if redisURL == "" {
+		redisURL = "redis://localhost:6379"
+	}
+	opts, err := redis.ParseURL(redisURL)
+	if err != nil {
+		t.Skipf("skipping: cannot parse redis URL: %v", err)
+	}
+	rdb := redis.NewClient(opts)
+	ctx := context.Background()
+	if err := rdb.Ping(ctx).Err(); err != nil {
+		t.Skipf("skipping: redis not available: %v", err)
+	}
+
+	ns := "octi-test-" + t.Name()
+	cleanup := func() {
+		keys, _ := rdb.Keys(ctx, ns+":*").Result()
+		if len(keys) > 0 {
+			rdb.Del(ctx, keys...)
+		}
+	}
+	cleanup()
+	t.Cleanup(func() { cleanup(); rdb.Close() })
+
+	// Set up a health dir where all CLI drivers are OPEN but API driver is healthy.
+	healthDir := t.TempDir()
+	writeHealthFile(t, healthDir, "claude-code", "OPEN") // CLI exhausted
+
+	tiers := map[string]routing.CostTier{
+		"claude-code": routing.TierCLI,
+		"claude-api":  routing.TierAPI,
+	}
+	router := routing.NewRouterWithTiers(healthDir, tiers)
+	coord, err := coordination.New(redisURL, ns)
+	if err != nil {
+		t.Fatalf("coordination engine: %v", err)
+	}
+	t.Cleanup(func() { coord.Close() })
+
+	d := NewDispatcher(rdb, router, coord, NewEventRouter(DefaultRules()), filepath.Join(t.TempDir(), "q.txt"), ns)
+
+	event := Event{Type: EventManual, Source: "test"}
+
+	// Dynamic budget (all CLI OPEN) → "low", which caps at local only → should queue or skip
+	dynResult, err := d.Dispatch(ctx, event, "api-tier-agent", 2)
+	if err != nil {
+		t.Fatalf("dynamic dispatch error: %v", err)
+	}
+	// With budget="low", API-tier driver is above the cap — expect queued or skipped
+	if dynResult.Action == "dispatched" && dynResult.Driver == "claude-api" {
+		t.Fatalf("dynamic dispatch should NOT route to API tier, got driver=%s", dynResult.Driver)
+	}
+
+	// Release claim to allow second dispatch attempt
+	d.ReleaseClaim(ctx, "api-tier-agent")
+	d.ClearCooldown(ctx, "api-tier-agent")
+
+	// Explicit budget="high" → can reach API tier
+	highResult, err := d.DispatchBudget(ctx, event, "api-tier-agent", 2, "high")
+	if err != nil {
+		t.Fatalf("explicit-high dispatch error: %v", err)
+	}
+	if highResult.Budget != "high" {
+		t.Fatalf("expected budget=high in result, got %s", highResult.Budget)
+	}
+	if highResult.Action == "dispatched" && highResult.Driver != "claude-api" {
+		t.Fatalf("expected claude-api (only healthy driver at high budget), got %s", highResult.Driver)
+	}
+}
+
+// TestDispatchBudget_LowBlocksCLI verifies that budget="low" prevents CLI-tier routing.
+func TestDispatchBudget_LowBlocksCLI(t *testing.T) {
+	d, ctx := testSetup(t)
+
+	event := Event{Type: EventManual, Source: "test"}
+	// testSetup uses only a CLI-tier driver (claude-code); budget="low" caps at TierLocal.
+	// The code task requires TierCLI, so minTier > maxTier → Skip.
+	result, err := d.DispatchBudget(ctx, event, "low-budget-agent", 2, "low")
+	if err != nil {
+		t.Fatalf("dispatch error: %v", err)
+	}
+	// With only a CLI driver and budget="low" (local only), dispatch should queue (all drivers
+	// exhausted from the perspective of the budget constraint).
+	if result.Action == "dispatched" {
+		t.Fatalf("expected queued/skipped with budget=low (no local drivers), got dispatched via %s", result.Driver)
+	}
+	if result.Budget != "low" {
+		t.Fatalf("expected budget=low in result, got %s", result.Budget)
+	}
+}

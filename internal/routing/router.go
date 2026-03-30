@@ -188,6 +188,39 @@ func (r *Router) HealthDir() string {
 	return r.healthDir
 }
 
+// DynamicBudget returns a budget level derived from current CLI-tier driver health.
+// It is used by the dispatcher to avoid automatic escalation to expensive API-tier
+// drivers when CLI-tier capacity is still available.
+//
+//	"medium" — at least one CLI-tier driver is CLOSED or HALF-OPEN; stay within the
+//	           CLI tier and do not escalate to the per-token API tier
+//	"low"    — all CLI-tier drivers are OPEN (exhausted); fall back to local/subscription
+//
+// "high" (which enables API-tier fallback) is never returned automatically.
+// Callers that need explicit API-tier burst capacity should pass "high" to Recommend directly.
+func (r *Router) DynamicBudget() string {
+	healthMap := make(map[string]DriverHealth, len(r.tiers))
+	for name := range r.tiers {
+		healthMap[name] = ReadDriverHealth(r.healthDir, name)
+	}
+
+	var cliHealthy, cliTotal int
+	for name, tier := range r.tiers {
+		if tier != TierCLI {
+			continue
+		}
+		cliTotal++
+		if h := healthMap[name]; h.CircuitState != "OPEN" {
+			cliHealthy++
+		}
+	}
+
+	if cliTotal == 0 || cliHealthy > 0 {
+		return "medium" // CLI capacity available; do not escalate to API tier
+	}
+	return "low" // all CLI-tier drivers exhausted; local/subscription only
+}
+
 // taskMinTier returns the minimum cost tier capable of handling the task type.
 // Keyword matching is case-insensitive. If no affinity matches, TierLocal is
 // returned so the cheapest possible driver is tried first.
