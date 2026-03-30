@@ -255,3 +255,44 @@ func TestMonthlyReset(t *testing.T) {
 		t.Errorf("expected agent name preserved, got %s", got.Agent)
 	}
 }
+
+func TestListAll(t *testing.T) {
+	bs, ctx := budgetTestSetup(t)
+
+	agents := []AgentBudget{
+		{Agent: "list-agent-01", Driver: "claude-code", Box: "jared", BudgetMonthlyCents: 500, SpentMonthlyCents: 100, RunsThisMonth: 3},
+		{Agent: "list-agent-02", Driver: "codex", Box: "jared", BudgetMonthlyCents: 1000, SpentMonthlyCents: 200, RunsThisMonth: 7},
+		{Agent: "list-agent-03", Driver: "copilot", Box: "box2", BudgetMonthlyCents: 250, SpentMonthlyCents: 0, RunsThisMonth: 0},
+	}
+	for _, a := range agents {
+		if err := bs.SetBudget(ctx, a); err != nil {
+			t.Fatalf("set budget for %s: %v", a.Agent, err)
+		}
+	}
+
+	all, err := bs.ListAll(ctx)
+	if err != nil {
+		t.Fatalf("list all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected 3 budgets, got %d", len(all))
+	}
+
+	byAgent := make(map[string]AgentBudget, len(all))
+	for _, b := range all {
+		byAgent[b.Agent] = b
+	}
+	for _, want := range agents {
+		got, ok := byAgent[want.Agent]
+		if !ok {
+			t.Errorf("agent %s not found in ListAll result", want.Agent)
+			continue
+		}
+		if got.BudgetMonthlyCents != want.BudgetMonthlyCents {
+			t.Errorf("%s: expected budget=%d, got %d", want.Agent, want.BudgetMonthlyCents, got.BudgetMonthlyCents)
+		}
+		if got.SpentMonthlyCents != want.SpentMonthlyCents {
+			t.Errorf("%s: expected spent=%d, got %d", want.Agent, want.SpentMonthlyCents, got.SpentMonthlyCents)
+		}
+	}
+}
