@@ -36,17 +36,22 @@ func main() {
 	}
 	defer mem.Close()
 
-	// Optional: enable vector search via Qdrant + embeddings
+	// Optional: enable vector search via Qdrant + embeddings.
+	// Default embedder: Voyage AI (Anthropic's recommended embedding partner).
+	// Override with OCTI_EMBEDDINGS_URL for Ollama or other OpenAI-compatible endpoints.
 	if qdrantURL := os.Getenv("OCTI_QDRANT_URL"); qdrantURL != "" {
 		vc := memory.NewQdrantClient(qdrantURL)
-		embURL := os.Getenv("OCTI_EMBEDDINGS_URL")   // e.g. "http://localhost:11434" (Ollama)
-		embKey := os.Getenv("OCTI_EMBEDDINGS_KEY")    // empty for Ollama
-		embModel := os.Getenv("OCTI_EMBEDDINGS_MODEL") // e.g. "nomic-embed-text"
+		embURL := os.Getenv("OCTI_EMBEDDINGS_URL")
+		embKey := os.Getenv("OCTI_EMBEDDINGS_KEY")     // Voyage AI API key (VOYAGE_API_KEY also checked)
+		embModel := os.Getenv("OCTI_EMBEDDINGS_MODEL")
 		if embURL == "" {
-			embURL = "http://localhost:11434"
+			embURL = "https://api.voyageai.com"
+		}
+		if embKey == "" {
+			embKey = os.Getenv("VOYAGE_API_KEY")
 		}
 		if embModel == "" {
-			embModel = "nomic-embed-text"
+			embModel = "voyage-3-lite"
 		}
 		emb := memory.NewHTTPEmbedder(embURL, embKey, embModel)
 		mem = mem.WithVector(vc, emb)
