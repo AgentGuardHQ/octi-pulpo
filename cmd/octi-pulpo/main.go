@@ -36,6 +36,23 @@ func main() {
 	}
 	defer mem.Close()
 
+	// Optional: enable vector search via Qdrant + embeddings
+	if qdrantURL := os.Getenv("OCTI_QDRANT_URL"); qdrantURL != "" {
+		vc := memory.NewQdrantClient(qdrantURL)
+		embURL := os.Getenv("OCTI_EMBEDDINGS_URL")   // e.g. "http://localhost:11434" (Ollama)
+		embKey := os.Getenv("OCTI_EMBEDDINGS_KEY")    // empty for Ollama
+		embModel := os.Getenv("OCTI_EMBEDDINGS_MODEL") // e.g. "nomic-embed-text"
+		if embURL == "" {
+			embURL = "http://localhost:11434"
+		}
+		if embModel == "" {
+			embModel = "nomic-embed-text"
+		}
+		emb := memory.NewHTTPEmbedder(embURL, embKey, embModel)
+		mem = mem.WithVector(vc, emb)
+		fmt.Fprintf(os.Stderr, "octi-pulpo: qdrant enabled (%s, embedder: %s/%s)\n", qdrantURL, embURL, embModel)
+	}
+
 	coord, err := coordination.New(redisURL, namespace)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "coordination engine: %v\n", err)
