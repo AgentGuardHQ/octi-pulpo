@@ -94,7 +94,7 @@ if [ -z "$DRY_RUN" ]; then
   git checkout -b "$BRANCH"
 
   # 3. Copy workflows — rename octi- prefix to chosen prefix
-  mkdir -p .github/workflows .github/scripts
+  mkdir -p .github/workflows
   for yml in "$WORKFLOWS_DIR"/octi-*.yml; do
     BASENAME=$(basename "$yml")
     TARGET_NAME="${BASENAME/octi-/${PREFIX}-}"
@@ -113,13 +113,7 @@ if [ -z "$DRY_RUN" ]; then
     echo "  [COPY] ${BASENAME} -> .github/workflows/${TARGET_NAME}"
   done
 
-  # 4. Copy scripts (no rename needed — scripts are generic)
-  for sh in "$WORKFLOWS_DIR"/scripts/claude-*.sh; do
-    [ -f "$sh" ] && cp "$sh" .github/scripts/ && chmod +x ".github/scripts/$(basename "$sh")" \
-      && echo "  [COPY] $(basename "$sh") -> .github/scripts/"
-  done
-
-  # 5. Copy config — update prefix field
+  # 4. Copy config — update prefix field
   CONFIG_FILE=".github/${PREFIX}-config.json"
   if [ ! -f "$CONFIG_FILE" ]; then
     jq --arg prefix "$PREFIX" '. + {prefix: $prefix}' "$WORKFLOWS_DIR/octi-config.json" > "$CONFIG_FILE"
@@ -147,12 +141,12 @@ workflows (prefix: ${PREFIX}-)."
 - Creates pipeline labels
 - Adds default ${PREFIX}-config.json
 
-## Required Secrets
-- \`ANTHROPIC_API_KEY\` — for Claude API triage (skip if tier_b_mode is human-team)
-- \`OCTI_PAT\` — GitHub PAT with repo scope (or GitHub App token)
+## Secrets
+- \`OCTI_PAT\` — org-level GitHub PAT or App token (for cross-repo label ops)
+- No Claude API keys needed — AI calls are handled by Octi Pulpo on your Linux box
 
 ## Next Steps
-1. Add secrets to repo settings
+1. Verify org-level secrets are configured
 2. Merge this PR
 3. Create a test issue to validate the pipeline
 
@@ -162,15 +156,13 @@ _Installed by ${BRAND} setup script_")
   echo "=== Setup Complete ==="
   echo "PR: ${PR_URL}"
   echo ""
-  echo "Required secrets (add to repo settings):"
-  echo "  - ANTHROPIC_API_KEY (skip if tier_b_mode=human-team)"
-  echo "  - OCTI_PAT"
+  echo "Required: OCTI_PAT (org-level) for cross-repo operations."
+  echo "No Claude API keys needed in GitHub — Octi Pulpo handles AI calls locally."
 else
   echo ""
   echo "=== Dry Run Complete ==="
   echo "Prefix: ${PREFIX}-"
   echo "Would copy and rename: $(ls "$WORKFLOWS_DIR"/octi-*.yml | wc -l) workflow files"
-  echo "Would copy: $(ls "$WORKFLOWS_DIR"/scripts/claude-*.sh 2>/dev/null | wc -l) script files"
   echo ""
   echo "File renames:"
   for yml in "$WORKFLOWS_DIR"/octi-*.yml; do
