@@ -2,16 +2,19 @@
 set -euo pipefail
 
 # Install Octi Pulpo pipeline into a target repo.
-# Usage: setup-pipeline.sh <owner/repo> [--prefix <prefix>] [--dry-run]
+# Usage: setup-pipeline.sh <owner/repo> [--prefix <prefix>] [--lang <lang>] [--dry-run]
 #
 # Options:
 #   --prefix <name>  Rename workflow files from 'octi-' to '<name>-' and
 #                    rebrand internal references. Default: octi
+#   --lang <lang>    Copy language-specific Copilot instructions.
+#                    Supported: go. Default: none (repo uses its own).
 #   --dry-run        Show what would be done without making changes
 #
 # Examples:
 #   setup-pipeline.sh AgentGuardHQ/agentguard-cloud
 #   setup-pipeline.sh myorg/frontend --prefix amd
+#   setup-pipeline.sh AgentGuardHQ/octi-pulpo --lang go
 #   setup-pipeline.sh myorg/frontend --prefix amd --dry-run
 #
 # Prerequisites:
@@ -21,19 +24,29 @@ set -euo pipefail
 # Parse arguments
 REPO=""
 PREFIX="octi"
+LANG=""
 DRY_RUN=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --prefix) PREFIX="$2"; shift 2 ;;
+    --lang) LANG="$2"; shift 2 ;;
     --dry-run) DRY_RUN="--dry-run"; shift ;;
     -*) echo "Unknown option: $1"; exit 1 ;;
     *) REPO="$1"; shift ;;
   esac
 done
 
+# Validate --lang if provided
+if [ -n "$LANG" ]; then
+  case "$LANG" in
+    go) ;;
+    *) echo "Error: unsupported language '${LANG}'. Supported: go"; exit 1 ;;
+  esac
+fi
+
 if [ -z "$REPO" ]; then
-  echo "Usage: setup-pipeline.sh <owner/repo> [--prefix <prefix>] [--dry-run]"
+  echo "Usage: setup-pipeline.sh <owner/repo> [--prefix <prefix>] [--lang <lang>] [--dry-run]"
   exit 1
 fi
 
@@ -47,6 +60,7 @@ BRAND="${PREFIX^} Pipeline"  # capitalize first letter
 echo "=== ${BRAND} Setup ==="
 echo "Target: ${REPO}"
 echo "Prefix: ${PREFIX}-"
+[ -n "$LANG" ] && echo "Lang:   ${LANG}"
 echo "Source: ${WORKFLOWS_DIR}"
 [ -n "$DRY_RUN" ] && echo "MODE: DRY RUN"
 echo ""
@@ -122,16 +136,48 @@ if [ -z "$DRY_RUN" ]; then
     echo "  [SKIP] ${CONFIG_FILE} already exists"
   fi
 
+  # 5. Copy language-specific Copilot instructions
+  if [ -n "$LANG" ]; then
+    echo ""
+    echo "--- Copying ${LANG} Copilot instructions ---"
+    INSTRUCTIONS_FILE="$WORKFLOWS_DIR/copilot-instructions-${LANG}.md"
+    REVIEW_FILE="$WORKFLOWS_DIR/copilot-review-instructions-${LANG}.md"
+
+    mkdir -p .github
+
+    if [ -f "$INSTRUCTIONS_FILE" ]; then
+      cp "$INSTRUCTIONS_FILE" ".github/copilot-instructions.md"
+      echo "  [COPY] copilot-instructions-${LANG}.md -> .github/copilot-instructions.md"
+    else
+      echo "  [WARN] ${INSTRUCTIONS_FILE} not found — skipping"
+    fi
+
+    if [ -f "$REVIEW_FILE" ]; then
+      cp "$REVIEW_FILE" ".github/copilot-review-instructions.md"
+      echo "  [COPY] copilot-review-instructions-${LANG}.md -> .github/copilot-review-instructions.md"
+    else
+      echo "  [WARN] ${REVIEW_FILE} not found — skipping"
+    fi
+  fi
+
   # 6. Commit and push
   git add .github/
+  LANG_MSG=""
+  [ -n "$LANG" ] && LANG_MSG="
+Includes ${LANG} Copilot coding and review instructions."
+
   git commit -m "feat: install ${BRAND} workflows
 
 Adds triage, Copilot dispatch, PR gate, review handler, and sweeper
-workflows (prefix: ${PREFIX}-)."
+workflows (prefix: ${PREFIX}-).${LANG_MSG}"
 
   git push -u origin "$BRANCH"
 
   # 7. Open PR
+  LANG_BULLET=""
+  [ -n "$LANG" ] && LANG_BULLET="
+- Adds ${LANG} Copilot coding and review instructions"
+
   PR_URL=$(gh pr create \
     --repo "$REPO" \
     --title "feat: install ${BRAND}" \
@@ -139,7 +185,7 @@ workflows (prefix: ${PREFIX}-)."
 - Installs 5 pipeline workflows (prefix: \`${PREFIX}-\`)
 - Adds Claude triage script
 - Creates pipeline labels
-- Adds default ${PREFIX}-config.json
+- Adds default ${PREFIX}-config.json${LANG_BULLET}
 
 ## Secrets
 - \`OCTI_PAT\` — org-level GitHub PAT or App token (for cross-repo label ops)
@@ -169,4 +215,12 @@ else
     BASENAME=$(basename "$yml")
     echo "  ${BASENAME} -> ${BASENAME/octi-/${PREFIX}-}"
   done
+  if [ -n "$LANG" ]; then
+    echo ""
+    echo "Copilot instructions (${LANG}):"
+    [ -f "$WORKFLOWS_DIR/copilot-instructions-${LANG}.md" ] && \
+      echo "  copilot-instructions-${LANG}.md -> .github/copilot-instructions.md"
+    [ -f "$WORKFLOWS_DIR/copilot-review-instructions-${LANG}.md" ] && \
+      echo "  copilot-review-instructions-${LANG}.md -> .github/copilot-review-instructions.md"
+  fi
 fi
