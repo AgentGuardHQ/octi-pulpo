@@ -120,6 +120,11 @@ var DefaultRepos = []string{
 	"AgentGuardHQ/agentguard",
 	"AgentGuardHQ/octi-pulpo",
 	"AgentGuardHQ/shellforge",
+	"AgentGuardHQ/cata",
+	"AgentGuardHQ/sentinel",
+	"AgentGuardHQ/llmint",
+	"AgentGuardHQ/agentguard-analytics",
+	"AgentGuardHQ/agentguard-cloud",
 }
 
 // NewStore creates a sprint store backed by Redis.
