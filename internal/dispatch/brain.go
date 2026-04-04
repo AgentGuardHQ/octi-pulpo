@@ -66,6 +66,12 @@ type Brain struct {
 	// flooding Slack on every tick. Keys are agent names or squad names.
 	stuckAgentAlerted    map[string]time.Time
 	inactiveSquadAlerted map[string]time.Time
+
+	// Adapters for task-based dispatch (Cata + GH Actions).
+	adapters []Adapter
+
+	// ghToken is used for label state machine operations on GitHub issues.
+	ghToken string
 }
 
 // NewBrain creates a dispatch brain.
@@ -81,6 +87,12 @@ func NewBrain(dispatcher *Dispatcher, chains ChainConfig) *Brain {
 		inactiveSquadAlerted: make(map[string]time.Time),
 	}
 }
+
+// SetAdapters registers task adapters (Cata, GH Actions) for direct dispatch.
+func (b *Brain) SetAdapters(adapters ...Adapter) { b.adapters = adapters }
+
+// SetGitHubToken sets the token used for label state machine operations.
+func (b *Brain) SetGitHubToken(token string) { b.ghToken = token }
 
 // SetSprintStore enables sprint-aware dispatch in the brain.
 func (b *Brain) SetSprintStore(s *sprint.Store) {
@@ -450,9 +462,10 @@ func (b *Brain) maybeNotifyConstraintChange(ctx context.Context, constraint Cons
 // identifyConstraint reads system state and returns the single most important constraint.
 // Checked in priority order — first match wins.
 func (b *Brain) identifyConstraint(ctx context.Context) Constraint {
-	// 1. All drivers exhausted (within current budget policy)
+	// 1. All CLI drivers exhausted — but only block if no API adapters exist.
+	// API adapters (Cata, GH Actions) dispatch independently of CLI driver health.
 	decision := b.dispatcher.router.Recommend("brain-constraint-check", b.dispatcher.router.DynamicBudget())
-	if decision.Skip {
+	if decision.Skip && len(b.adapters) == 0 {
 		return Constraint{
 			Type:        "all_drivers_down",
 			Description: "all drivers exhausted — circuit breakers OPEN",
@@ -679,6 +692,49 @@ func (b *Brain) executeLeverageAction(ctx context.Context, action LeverageAction
 		b.log.Printf("leverage: %s -> BLOCKED (dispatch disabled, score=%.1f, reason=%s)", action.Agent, action.Score, action.Reason)
 		return
 	}
+
+	// Adapter-based dispatch: create a Task and route to Cata or GH Actions.
+	// Dedup: skip if we dispatched this issue recently (10 min cooldown).
+	dispatchKey := fmt.Sprintf("%s#%d", action.Repo, action.IssueNum)
+	if last, ok := b.stuckAgentAlerted[dispatchKey]; ok && time.Since(last) < 10*time.Minute {
+		return // already dispatched recently
+	}
+
+	if len(b.adapters) > 0 && action.Repo != "" {
+		task := &Task{
+			ID:       fmt.Sprintf("brain-%d-%d", action.IssueNum, time.Now().Unix()),
+			Type:     "code",
+			Repo:     action.Repo,
+			Prompt:   fmt.Sprintf("Fix issue #%d: %s", action.IssueNum, action.Reason),
+			Priority: "high",
+		}
+		for _, adapter := range b.adapters {
+			if adapter.CanAccept(task) {
+				b.log.Printf("leverage: %s#%d -> adapter %s (score=%.1f, reason=%s)",
+					action.Repo, action.IssueNum, adapter.Name(), action.Score, action.Reason)
+				result, err := adapter.Dispatch(ctx, task)
+				if err != nil {
+					b.log.Printf("adapter %s dispatch error: %v", adapter.Name(), err)
+					continue
+				}
+				b.log.Printf("leverage: %s#%d -> %s (%s)", action.Repo, action.IssueNum, adapter.Name(), result.Status)
+				b.stuckAgentAlerted[dispatchKey] = time.Now()
+
+				// State machine: mark issue as claimed on GitHub
+				if action.IssueNum > 0 {
+					if err := b.addIssueLabel(ctx, action.Repo, action.IssueNum, LabelClaimed); err != nil {
+						b.log.Printf("label: failed to add %s to %s#%d: %v", LabelClaimed, action.Repo, action.IssueNum, err)
+					} else {
+						b.log.Printf("label: %s#%d -> %s", action.Repo, action.IssueNum, LabelClaimed)
+					}
+				}
+				return
+			}
+		}
+		b.log.Printf("leverage: no adapter accepted task for %s#%d", action.Repo, action.IssueNum)
+	}
+
+	// Fallback: legacy agent-name queue dispatch
 	result, err := b.dispatcher.Dispatch(ctx, event, action.Agent, 1)
 	if err != nil {
 		b.log.Printf("leverage dispatch %s: %v", action.Agent, err)
