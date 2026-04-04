@@ -30,6 +30,7 @@ type LeverageAction struct {
 	Repo     string
 	Score    float64
 	Reason   string
+	TaskType string // maps to adapter task types: "bugfix", "code-gen", "config", etc.
 }
 
 // Brain runs a periodic evaluation loop that decides what to dispatch
@@ -584,6 +585,7 @@ func (b *Brain) leverageForP0(ctx context.Context) *LeverageAction {
 				Repo:     item.Repo,
 				Score:    10.0,
 				Reason:   fmt.Sprintf("P0 bug: %s", item.Title),
+				TaskType: "bugfix",
 			}
 		}
 	}
@@ -613,6 +615,7 @@ func (b *Brain) leverageForIdleAgents(ctx context.Context) *LeverageAction {
 		Repo:     item.Repo,
 		Score:    5.0,
 		Reason:   fmt.Sprintf("idle agents detected, assigning sprint item: %s", item.Title),
+		TaskType: inferTaskType(item.Title),
 	}
 }
 
@@ -671,6 +674,7 @@ func (b *Brain) leverageForNextSprint(ctx context.Context) *LeverageAction {
 		Repo:     item.Repo,
 		Score:    3.0,
 		Reason:   fmt.Sprintf("next sprint item (P%d): %s", item.Priority, item.Title),
+		TaskType: inferTaskType(item.Title),
 	}
 }
 
@@ -701,9 +705,13 @@ func (b *Brain) executeLeverageAction(ctx context.Context, action LeverageAction
 	}
 
 	if len(b.adapters) > 0 && action.Repo != "" {
+		taskType := action.TaskType
+		if taskType == "" {
+			taskType = "code-gen"
+		}
 		task := &Task{
 			ID:       fmt.Sprintf("brain-%d-%d", action.IssueNum, time.Now().Unix()),
-			Type:     "code",
+			Type:     taskType,
 			Repo:     action.Repo,
 			Prompt:   fmt.Sprintf("Fix issue #%d: %s", action.IssueNum, action.Reason),
 			Priority: "high",
@@ -956,4 +964,19 @@ func FormatChainGraph(chains ChainConfig) string {
 		}
 	}
 	return out
+}
+
+// inferTaskType guesses the adapter task type from an issue title.
+// Returns "bugfix" for bug-related titles, "config" for config/CI titles,
+// and "code-gen" as the default.
+func inferTaskType(title string) string {
+	lower := strings.ToLower(title)
+	switch {
+	case strings.Contains(lower, "bug") || strings.Contains(lower, "fix") || strings.Contains(lower, "broken"):
+		return "bugfix"
+	case strings.Contains(lower, "config") || strings.Contains(lower, "ci") || strings.Contains(lower, "yaml"):
+		return "config"
+	default:
+		return "code-gen"
+	}
 }
