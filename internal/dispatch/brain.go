@@ -720,15 +720,10 @@ func (b *Brain) executeLeverageAction(ctx context.Context, action LeverageAction
 			if adapter.CanAccept(task) {
 				b.log.Printf("leverage: %s#%d -> adapter %s (score=%.1f, reason=%s)",
 					action.Repo, action.IssueNum, adapter.Name(), action.Score, action.Reason)
-				result, err := adapter.Dispatch(ctx, task)
-				if err != nil {
-					b.log.Printf("adapter %s dispatch error: %v", adapter.Name(), err)
-					continue
-				}
-				b.log.Printf("leverage: %s#%d -> %s (%s)", action.Repo, action.IssueNum, adapter.Name(), result.Status)
-				b.stuckAgentAlerted[dispatchKey] = time.Now()
 
-				// State machine: mark issue as claimed on GitHub
+				// Register dedup + label synchronously so the brain
+				// immediately moves on. Adapter execution is async.
+				b.stuckAgentAlerted[dispatchKey] = time.Now()
 				if action.IssueNum > 0 {
 					if err := b.addIssueLabel(ctx, action.Repo, action.IssueNum, LabelClaimed); err != nil {
 						b.log.Printf("label: failed to add %s to %s#%d: %v", LabelClaimed, action.Repo, action.IssueNum, err)
@@ -736,6 +731,17 @@ func (b *Brain) executeLeverageAction(ctx context.Context, action LeverageAction
 						b.log.Printf("label: %s#%d -> %s", action.Repo, action.IssueNum, LabelClaimed)
 					}
 				}
+
+				// Fire adapter dispatch in a goroutine so the brain tick
+				// is not blocked by long-running adapters (e.g. Cata ~10 min).
+				go func(a Adapter, t *Task, repo string, issueNum int) {
+					result, err := a.Dispatch(context.Background(), t)
+					if err != nil {
+						b.log.Printf("adapter %s async result: %s#%d error: %v", a.Name(), repo, issueNum, err)
+						return
+					}
+					b.log.Printf("adapter %s async result: %s#%d -> %s", a.Name(), repo, issueNum, result.Status)
+				}(adapter, task, action.Repo, action.IssueNum)
 				return
 			}
 		}
