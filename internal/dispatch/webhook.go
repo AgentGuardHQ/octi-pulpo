@@ -37,6 +37,7 @@ type WebhookServer struct {
 	triageHandler      *TriageHandler
 	reviewHandler      *ReviewHandler
 	plannerHandler     *PlannerHandler
+	codingHandler      *CodingHandler
 	cascadeHandler     *CascadeHandler
 	draftConverter     *DraftConverter
 	copilotFix         *CopilotFixLoop
@@ -56,6 +57,11 @@ func (ws *WebhookServer) SetReviewHandler(rh *ReviewHandler) {
 // SetPlannerHandler enables automatic issue scoping for tier:b-scope issues.
 func (ws *WebhookServer) SetPlannerHandler(ph *PlannerHandler) {
 	ws.plannerHandler = ph
+}
+
+// SetCodingHandler enables Tier B senior coding for escalated PRs (tier:b-code).
+func (ws *WebhookServer) SetCodingHandler(ch *CodingHandler) {
+	ws.codingHandler = ch
 }
 
 // SetCascadeHandler enables strategy cascade — syncs roadmap to issues across repos.
@@ -370,12 +376,12 @@ func (ws *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// PR review: Claude reviews on both tier:review (first pass) and tier:b-code (escalation).
-	// On tier:review: reviews + approves/merges (closes the autonomy loop).
-	// On tier:b-code: senior escalation after Copilot fix loop exhausted.
-	if event.Type == EventPRLabeled && ws.reviewHandler != nil {
+	// PR review and Tier B coding:
+	// - tier:review → ReviewHandler (first pass review)
+	// - tier:b-code → CodingHandler (senior escalation for implementation)
+	if event.Type == EventPRLabeled {
 		labelName := event.Payload["label"]
-		if labelName == "tier:review" || labelName == "tier:b-code" {
+		if labelName == "tier:review" && ws.reviewHandler != nil {
 			prNumber := int(getNestedNumber(payload, "pull_request", "number"))
 			go func() {
 				reviewResult, reviewErr := ws.reviewHandler.HandlePR(context.Background(), repo, prNumber)
@@ -390,7 +396,25 @@ func (ws *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]interface{}{
 				"ok":     true,
-				"action": "senior_review_dispatched",
+				"action": "review_dispatched",
+			})
+			return
+		} else if labelName == "tier:b-code" && ws.codingHandler != nil {
+			prNumber := int(getNestedNumber(payload, "pull_request", "number"))
+			go func() {
+				codingResult, codingErr := ws.codingHandler.HandlePR(context.Background(), repo, prNumber)
+				if codingErr != nil {
+					fmt.Fprintf(os.Stderr, "[octi-pulpo] coding error PR #%d: %v\n", prNumber, codingErr)
+				} else {
+					fmt.Fprintf(os.Stderr, "[octi-pulpo] coding PR #%d: implemented=%v summary=%s\n",
+						prNumber, codingResult.Implemented, codingResult.Summary)
+				}
+			}()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"ok":     true,
+				"action": "coding_dispatched",
 			})
 			return
 		}

@@ -171,6 +171,11 @@ func main() {
 		plannerHandler.SetBudgetStore(budgetStore)
 		ws.SetPlannerHandler(plannerHandler)
 
+		// Wire coding handler — Tier B senior coding for escalated PRs
+		codingHandler := dispatch.NewCodingHandler("", "", "")
+		codingHandler.SetBudgetStore(budgetStore)
+		ws.SetCodingHandler(codingHandler)
+
 		// Wire cascade handler — syncs roadmap to issues across repos
 		cascadeHandler := dispatch.NewCascadeHandler("", "", "")
 		ws.SetCascadeHandler(cascadeHandler)
