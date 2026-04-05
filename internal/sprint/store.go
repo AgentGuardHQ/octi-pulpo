@@ -117,16 +117,16 @@ type Store struct {
 
 // DefaultRepos is the standard set of repos to sync.
 var DefaultRepos = []string{
-	"chitinhq/agentguard",
-	"chitinhq/octi-pulpo",
+	"chitinhq/kernel",
+	"chitinhq/octi",
 	"chitinhq/shellforge",
 	"chitinhq/clawta",
 	"chitinhq/sentinel",
 	"chitinhq/llmint",
-	"chitinhq/agentguard-analytics",
-	"chitinhq/agentguard-cloud",
-	"chitinhq/agentguard-workspace",
-	"chitinhq/agentguard-extensions",
+	"chitinhq/analytics",
+	"chitinhq/cloud",
+	"chitinhq/workspace",
+	"chitinhq/extensions",
 	"chitinhq/preflight",
 	"chitinhq/homebrew-tap",
 }
@@ -840,19 +840,19 @@ func inferSquadFromRepo(repo string) string {
 	}
 	name := parts[1]
 	switch {
-	case name == "agentguard":
+	case name == "kernel":
 		return "kernel"
-	case name == "agentguard-cloud":
+	case name == "cloud":
 		return "cloud"
-	case name == "agentguard-analytics":
+	case name == "analytics":
 		return "analytics"
-	case name == "agentguard-extensions" || name == "preflight" || name == "homebrew-tap":
+	case name == "extensions" || name == "preflight" || name == "homebrew-tap":
 		return "kernel"
-	case name == "agentguard-workspace":
+	case name == "workspace":
 		return "ops"
 	case name == "shellforge":
 		return "shellforge"
-	case name == "octi-pulpo":
+	case name == "octi":
 		return "octi-pulpo"
 	case strings.HasPrefix(name, "studio"):
 		return "studio"

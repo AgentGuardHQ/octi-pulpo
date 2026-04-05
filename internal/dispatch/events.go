@@ -28,7 +28,7 @@ const (
 type Event struct {
 	Type     EventType         `json:"type"`
 	Source   string            `json:"source"`   // "github", "cron", "slack", "manual"
-	Repo     string            `json:"repo"`     // "chitinhq/agentguard"
+	Repo     string            `json:"repo"`     // "chitinhq/kernel"
 	Payload  map[string]string `json:"payload"`  // event-specific data
 	Priority int               `json:"priority"` // 0=critical, 1=high, 2=normal, 3=background
 }
@@ -89,42 +89,42 @@ func DefaultRules() []EventRule {
 		// PR review agents (triggered by PR events)
 		{
 			EventType: EventPROpened,
-			RepoMatch: "chitinhq/agentguard",
+			RepoMatch: "chitinhq/kernel",
 			AgentName: "workspace-pr-review-agent",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
 		},
 		{
 			EventType: EventPRUpdated,
-			RepoMatch: "chitinhq/agentguard",
+			RepoMatch: "chitinhq/kernel",
 			AgentName: "workspace-pr-review-agent",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
 		},
 		{
 			EventType: EventPROpened,
-			RepoMatch: "chitinhq/agentguard-cloud",
+			RepoMatch: "chitinhq/cloud",
 			AgentName: "code-review-agent-cloud",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
 		},
 		{
 			EventType: EventPRUpdated,
-			RepoMatch: "chitinhq/agentguard-cloud",
+			RepoMatch: "chitinhq/cloud",
 			AgentName: "code-review-agent-cloud",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
 		},
 		{
 			EventType: EventPROpened,
-			RepoMatch: "chitinhq/agentguard-analytics",
+			RepoMatch: "chitinhq/analytics",
 			AgentName: "analytics-pr-review-agent",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
 		},
 		{
 			EventType: EventPROpened,
-			RepoMatch: "chitinhq/agentguard-workspace",
+			RepoMatch: "chitinhq/workspace",
 			AgentName: "workspace-pr-review-agent",
 			Priority:  1,
 			Cooldown:  5 * time.Minute,
@@ -133,28 +133,28 @@ func DefaultRules() []EventRule {
 		// PR merger agents (triggered by CI completion)
 		{
 			EventType: EventCICompleted,
-			RepoMatch: "chitinhq/agentguard",
+			RepoMatch: "chitinhq/kernel",
 			AgentName: "pr-merger-agent",
 			Priority:  2,
 			Cooldown:  10 * time.Minute, // prevents stampede (was 214 runs/day)
 		},
 		{
 			EventType: EventCICompleted,
-			RepoMatch: "chitinhq/agentguard-cloud",
+			RepoMatch: "chitinhq/cloud",
 			AgentName: "pr-merger-agent-cloud",
 			Priority:  2,
 			Cooldown:  10 * time.Minute,
 		},
 		{
 			EventType: EventCICompleted,
-			RepoMatch: "chitinhq/agentguard-analytics",
+			RepoMatch: "chitinhq/analytics",
 			AgentName: "analytics-pr-review-agent",
 			Priority:  2,
 			Cooldown:  10 * time.Minute,
 		},
 		{
 			EventType: EventCICompleted,
-			RepoMatch: "chitinhq/agentguard-workspace",
+			RepoMatch: "chitinhq/workspace",
 			AgentName: "pr-merger-agent",
 			Priority:  2,
 			Cooldown:  10 * time.Minute,

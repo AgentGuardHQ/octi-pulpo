@@ -423,7 +423,7 @@ func (ws *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	// Strategy cascade: when roadmap.md or strategy/ changes are pushed to
 	// agentguard-workspace, diff roadmap against managed issues and sync.
 	if event.Type == EventPush && ws.cascadeHandler != nil {
-		if repo == "chitinhq/agentguard-workspace" && event.Payload["touches_roadmap"] == "true" {
+		if repo == "chitinhq/workspace" && event.Payload["touches_roadmap"] == "true" {
 			go func() {
 				result, err := ws.cascadeHandler.HandlePush(context.Background())
 				if err != nil {

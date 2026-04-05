@@ -1115,7 +1115,7 @@ func toolDefs() []ToolDef {
 				"properties": map[string]interface{}{
 					"eventType": map[string]interface{}{"type": "string", "enum": []string{"pr.opened", "pr.updated", "ci.completed", "timer", "budget.change", "manual", "slack.action"}, "description": "Event type"},
 					"source":    map[string]string{"type": "string", "description": "Event source (github, cron, slack, manual)"},
-					"repo":      map[string]string{"type": "string", "description": "Repository full name (e.g. chitinhq/agentguard)"},
+					"repo":      map[string]string{"type": "string", "description": "Repository full name (e.g. chitinhq/kernel)"},
 					"payload":   map[string]interface{}{"type": "object", "description": "Event-specific key-value data"},
 					"priority":  map[string]interface{}{"type": "number", "description": "Priority (0=critical, 1=high, 2=normal, 3=background)"},
 				},
@@ -1355,7 +1355,7 @@ func toolDefs() []ToolDef {
 				"properties": map[string]interface{}{
 					"title":            map[string]string{"type": "string", "description": "Short task title"},
 					"squad":            map[string]string{"type": "string", "description": "Owning squad (e.g. 'kernel')"},
-					"repo":             map[string]string{"type": "string", "description": "Target repo (e.g. 'chitinhq/agentguard')"},
+					"repo":             map[string]string{"type": "string", "description": "Target repo (e.g. 'chitinhq/kernel')"},
 					"file_paths":       map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Files the task will touch (used for blast-radius scoring)"},
 					"priority":         map[string]interface{}{"type": "integer", "description": "0=CRITICAL, 1=HIGH, 2=NORMAL, 3=BACKGROUND"},
 					"is_reversible":    map[string]interface{}{"type": "boolean", "description": "Whether the changes can be easily undone"},

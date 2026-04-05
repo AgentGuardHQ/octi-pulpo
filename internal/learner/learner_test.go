@@ -9,7 +9,7 @@ func TestRepoShortName(t *testing.T) {
 	cases := []struct {
 		input, want string
 	}{
-		{"chitinhq/octi-pulpo", "octi-pulpo"},
+		{"chitinhq/octi", "octi"},
 		{"chitinhq/shellforge", "shellforge"},
 		{"single", "single"},
 		{"", ""},
@@ -26,7 +26,7 @@ func TestRecordOutcome_BuildsContent(t *testing.T) {
 	// but we can verify the content formatting logic.
 	task := &TaskInfo{
 		Type:     "bugfix",
-		Repo:     "chitinhq/octi-pulpo",
+		Repo:     "chitinhq/octi",
 		Prompt:   "fix the null pointer in auth handler",
 		Priority: "high",
 	}
