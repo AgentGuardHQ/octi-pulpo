@@ -46,11 +46,11 @@ type CascadeHandler struct {
 
 // DefaultCascadeRepos is the list of repos the cascade handler manages.
 var DefaultCascadeRepos = []string{
-	"chitinhq/agentguard-cloud",
-	"chitinhq/agentguard",
-	"chitinhq/octi-pulpo",
+	"chitinhq/cloud",
+	"chitinhq/kernel",
+	"chitinhq/octi",
 	"chitinhq/shellforge",
-	"chitinhq/agentguard-analytics",
+	"chitinhq/analytics",
 }
 
 // NewCascadeHandler creates a cascade handler. Reads tokens from env if empty.
@@ -164,7 +164,7 @@ func (ch *CascadeHandler) fetchRoadmap(ctx context.Context) (string, error) {
 
 	if resp.StatusCode == http.StatusNotFound {
 		// Fallback: try strategy/roadmap.md
-		return ch.fetchFile(ctx, "chitinhq/agentguard-workspace", "strategy/roadmap.md")
+		return ch.fetchFile(ctx, "chitinhq/workspace", "strategy/roadmap.md")
 	}
 
 	if resp.StatusCode != http.StatusOK {

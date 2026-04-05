@@ -4,7 +4,7 @@ import "testing"
 
 func TestParseEpisode(t *testing.T) {
 	content := `Task: fix the null pointer in auth handler
-Type: bugfix | Repo: chitinhq/octi-pulpo | Priority: high
+Type: bugfix | Repo: chitinhq/octi | Priority: high
 Outcome: completed | Adapter: anthropic-cascade:claude-haiku-4-5-20251001
 Tokens: 2500 in / 800 out | Cost: $0.0100
 Summary: Fixed by adding nil check in middleware/auth.go line 47`
@@ -14,8 +14,8 @@ Summary: Fixed by adding nil check in middleware/auth.go line 47`
 	if ep.taskType != "bugfix" {
 		t.Errorf("expected bugfix, got %s", ep.taskType)
 	}
-	if ep.repo != "chitinhq/octi-pulpo" {
-		t.Errorf("expected chitinhq/octi-pulpo, got %s", ep.repo)
+	if ep.repo != "chitinhq/octi" {
+		t.Errorf("expected chitinhq/octi, got %s", ep.repo)
 	}
 	if ep.status != "completed" {
 		t.Errorf("expected completed, got %s", ep.status)
@@ -42,9 +42,9 @@ Error: shellforge exited: exit status 1`
 
 func TestBuildProcedure(t *testing.T) {
 	episodes := []episodeData{
-		{taskType: "bugfix", repo: "chitinhq/octi-pulpo", status: "completed", prompt: "fix auth bug"},
-		{taskType: "bugfix", repo: "chitinhq/octi-pulpo", status: "completed", prompt: "fix session bug"},
-		{taskType: "bugfix", repo: "chitinhq/octi-pulpo", status: "failed", prompt: "fix crash"},
+		{taskType: "bugfix", repo: "chitinhq/octi", status: "completed", prompt: "fix auth bug"},
+		{taskType: "bugfix", repo: "chitinhq/octi", status: "completed", prompt: "fix session bug"},
+		{taskType: "bugfix", repo: "chitinhq/octi", status: "failed", prompt: "fix crash"},
 	}
 
 	proc := buildProcedure("bugfix:chitinhq/octi-pulpo", episodes)

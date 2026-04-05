@@ -1,6 +1,9 @@
 package dispatch
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestClassifyMessage(t *testing.T) {
 	tests := []struct {
@@ -25,28 +28,28 @@ func TestClassifyMessage(t *testing.T) {
 func TestFormatBudgetAlert(t *testing.T) {
 	alert := FormatBudgetAlert("claude-code", 15, 2)
 
-	if !contains(alert, "claude-code") {
+	if !strings.Contains(alert, "claude-code") {
 		t.Error("expected driver name in alert")
 	}
-	if !contains(alert, "15%") {
+	if !strings.Contains(alert, "15%") {
 		t.Error("expected percentage in alert")
 	}
-	if !contains(alert, "2 architect") {
+	if !strings.Contains(alert, "2 architect") {
 		t.Error("expected queued task count in alert")
 	}
 }
 
 func TestFormatEscalation(t *testing.T) {
-	blocks := FormatEscalation("chitinhq/agentguard", 42, "High blast radius: modifies auth middleware", 55)
+	blocks := FormatEscalation("chitinhq/kernel", 42, "High blast radius: modifies auth middleware", 55)
 
 	if len(blocks) == 0 {
 		t.Fatal("expected non-empty blocks")
 	}
 	raw := blocksToString(blocks)
-	if !contains(raw, "#42") {
+	if !strings.Contains(raw, "#42") {
 		t.Error("expected PR number in escalation")
 	}
-	if !contains(raw, "auth middleware") {
+	if !strings.Contains(raw, "auth middleware") {
 		t.Error("expected reason in escalation")
 	}
 }

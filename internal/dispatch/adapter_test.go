@@ -16,7 +16,7 @@ func TestTaskFields(t *testing.T) {
 	task := Task{
 		ID:       "t1",
 		Type:     "code-gen",
-		Repo:     "chitinhq/octi-pulpo",
+		Repo:     "chitinhq/octi",
 		Prompt:   "write a hello world",
 		Toolset:  []string{"read_file", "write_file"},
 		Priority: "normal",
@@ -30,7 +30,7 @@ func TestTaskFields(t *testing.T) {
 	if task.Type != "code-gen" {
 		t.Errorf("Type: got %q", task.Type)
 	}
-	if task.Repo != "chitinhq/octi-pulpo" {
+	if task.Repo != "chitinhq/octi" {
 		t.Errorf("Repo: got %q", task.Repo)
 	}
 	if len(task.Toolset) != 2 {
@@ -127,7 +127,7 @@ func TestGHActionsAdapterName(t *testing.T) {
 
 func TestGHActionsAdapterCanAccept(t *testing.T) {
 	g := NewGHActionsAdapter("mytoken")
-	task := &Task{ID: "t1", Repo: "chitinhq/octi-pulpo"}
+	task := &Task{ID: "t1", Repo: "chitinhq/octi"}
 	if !g.CanAccept(task) {
 		t.Error("expected CanAccept true with token + repo")
 	}
@@ -144,7 +144,7 @@ func TestGHActionsAdapterCanAccept_NoRepo(t *testing.T) {
 func TestGHActionsAdapterCanAccept_NoToken(t *testing.T) {
 	os.Unsetenv("GITHUB_TOKEN")
 	g := NewGHActionsAdapter("")
-	task := &Task{ID: "t1", Repo: "chitinhq/octi-pulpo"}
+	task := &Task{ID: "t1", Repo: "chitinhq/octi"}
 	if g.CanAccept(task) {
 		t.Error("expected CanAccept false when token is empty")
 	}
@@ -177,7 +177,7 @@ func TestGHActionsAdapterDispatch(t *testing.T) {
 	task := &Task{
 		ID:       "task-99",
 		Type:     "pr-review",
-		Repo:     "chitinhq/octi-pulpo",
+		Repo:     "chitinhq/octi",
 		Prompt:   "review this PR",
 		Toolset:  []string{"read_file"},
 		Priority: "high",

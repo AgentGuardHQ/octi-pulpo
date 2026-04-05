@@ -269,7 +269,7 @@ func TestEventRouter_MatchesPROpened(t *testing.T) {
 	event := Event{
 		Type:   EventPROpened,
 		Source: "github",
-		Repo:   "chitinhq/agentguard",
+		Repo:   "chitinhq/kernel",
 	}
 
 	matches := er.Match(event)
@@ -295,7 +295,7 @@ func TestEventRouter_MatchesCICompleted(t *testing.T) {
 	event := Event{
 		Type:   EventCICompleted,
 		Source: "github",
-		Repo:   "chitinhq/agentguard-cloud",
+		Repo:   "chitinhq/cloud",
 	}
 
 	matches := er.Match(event)
@@ -429,7 +429,7 @@ func TestDispatchEvent_PROpenedRoutes(t *testing.T) {
 	event := Event{
 		Type:   EventPROpened,
 		Source: "github",
-		Repo:   "chitinhq/agentguard",
+		Repo:   "chitinhq/kernel",
 	}
 
 	results, err := d.DispatchEvent(ctx, event)

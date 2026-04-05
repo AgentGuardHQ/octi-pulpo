@@ -5,15 +5,15 @@ import (
 )
 
 func TestTaskHash_Deterministic(t *testing.T) {
-	h1 := TaskHash("code-gen", "fix the bug", "chitinhq/octi-pulpo")
-	h2 := TaskHash("code-gen", "fix the bug", "chitinhq/octi-pulpo")
+	h1 := TaskHash("code-gen", "fix the bug", "chitinhq/octi")
+	h2 := TaskHash("code-gen", "fix the bug", "chitinhq/octi")
 	if h1 != h2 {
 		t.Errorf("same inputs should produce same hash: %s vs %s", h1, h2)
 	}
 }
 
 func TestTaskHash_DifferentInputs(t *testing.T) {
-	h1 := TaskHash("code-gen", "fix the bug", "chitinhq/octi-pulpo")
+	h1 := TaskHash("code-gen", "fix the bug", "chitinhq/octi")
 	h2 := TaskHash("code-gen", "fix the bug", "chitinhq/shellforge")
 	if h1 == h2 {
 		t.Error("different repos should produce different hashes")
