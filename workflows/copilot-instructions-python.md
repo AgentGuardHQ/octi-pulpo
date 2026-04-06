@@ -1,4 +1,4 @@
-# Copilot Instructions — Python (agentguard-analytics)
+# Copilot Instructions — Python
 
 ## Stack
 

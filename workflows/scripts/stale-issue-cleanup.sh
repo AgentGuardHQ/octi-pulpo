@@ -29,15 +29,14 @@ done
 
 # ── Target repos ────────────────────────────────────────────────
 REPOS=(
-  "chitinhq/agentguard-cloud"
-  "chitinhq/agentguard"
-  "chitinhq/octi-pulpo"
+  "chitinhq/kernel"
+  "chitinhq/octi"
   "chitinhq/shellforge"
-  "chitinhq/agentguard-analytics"
-  "chitinhq/agentguard-extensions"
-  "chitinhq/preflight"
+  "chitinhq/clawta"
+  "chitinhq/sentinel"
+  "chitinhq/llmint"
   "chitinhq/homebrew-tap"
-  "chitinhq/agentguard-workspace"
+  "chitinhq/chitin-workspace"
 )
 
 # Labels that protect an issue from being closed

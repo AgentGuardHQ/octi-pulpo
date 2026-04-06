@@ -32,7 +32,7 @@ No Claude API keys or external secrets needed in GitHub — only the default `GI
 
 ```bash
 # Default (open source)
-scripts/setup-pipeline.sh chitinhq/agentguard-cloud
+scripts/setup-pipeline.sh chitinhq/shellforge
 
 # Custom prefix (enterprise — avoids IP concerns)
 scripts/setup-pipeline.sh myorg/frontend --prefix amd

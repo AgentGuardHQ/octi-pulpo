@@ -7,9 +7,9 @@ Swarm coordination layer for autonomous agent fleets.
 </p>
 
 <p align="center">
-  <a href="https://github.com/chitinhq/octi-pulpo"><img src="https://img.shields.io/badge/Status-Alpha-orange" alt="Alpha"></a>
-  <a href="https://github.com/chitinhq/octi-pulpo/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
-  <a href="https://pkg.go.dev/github.com/chitinhq/octi-pulpo"><img src="https://img.shields.io/badge/Go-1.18+-00ADD8?logo=go&logoColor=white" alt="Go"></a>
+  <a href="https://github.com/chitinhq/octi"><img src="https://img.shields.io/badge/Status-Alpha-orange" alt="Alpha"></a>
+  <a href="https://github.com/chitinhq/octi/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
+  <a href="https://pkg.go.dev/github.com/chitinhq/octi"><img src="https://img.shields.io/badge/Go-1.18+-00ADD8?logo=go&logoColor=white" alt="Go"></a>
 </p>
 
 ---
@@ -36,8 +36,8 @@ Running multiple AI agents? They step on each other. Duplicate work. Miss handof
 
 ```bash
 # Build from source
-git clone https://github.com/chitinhq/octi-pulpo.git
-cd octi-pulpo
+git clone https://github.com/chitinhq/octi.git
+cd octi
 go build -o octi-pulpo ./cmd/octi-pulpo/
 
 # Run (requires Redis)
@@ -105,14 +105,14 @@ Agents interact through standard MCP tools:
     │            │        └────────────┘
     │            │              │
 ┌───▼────────────▼──────────────▼─────────────┐
-│  AgentGuard Gateway                         │
+│  Chitin Gateway                              │
 │  Policy enforcement · Telemetry · Invariants│
 └─────────────────────────────────────────────┘
          │                   │
    Redis (hot state)   Vector DB (cold knowledge)
 ```
 
-Octi Pulpo is **independent** — it works with any agent swarm, with or without governance. When paired with the [AgentGuard Gateway](https://github.com/chitinhq/agentguard), agents are governed transparently regardless of execution surface.
+Octi Pulpo is **independent** — it works with any agent swarm, with or without governance. When paired with the [Chitin Gateway](https://github.com/chitinhq/kernel), agents are governed transparently regardless of execution surface.
 
 ### Execution Surfaces
 
@@ -122,15 +122,13 @@ The router picks the cheapest capable surface for each task (Ollama → GitHub A
 - **GitHub Actions** — `repository_dispatch` triggers Copilot-powered workflows at zero marginal cost
 - **Anthropic API** — Per-token burst capacity via [ShellForge](https://github.com/chitinhq/shellforge) agent harness, gated by a $50/mo budget pool with priority-based thresholds (CRITICAL 0%, HIGH 15%, NORMAL 30%, BACKGROUND 50%)
 
-## Part of the Governed Swarm Platform
+## Part of the Chitin Platform
 
 | Repo | Role |
 |------|------|
-| [AgentGuard](https://github.com/chitinhq/agentguard) | Governance — policy enforcement, gateway, telemetry, invariants |
+| [Chitin Kernel](https://github.com/chitinhq/kernel) | Governance — policy enforcement, gateway, telemetry, invariants |
 | **Octi Pulpo** | **Coordination — pipeline controller, model routing, dispatch adapters, Slack control plane** |
 | [ShellForge](https://github.com/chitinhq/shellforge) | Execution — agent harness (Ralph Loop, sub-agent orchestration, Anthropic API runner) |
-| [Preflight](https://github.com/chitinhq/preflight) | Protocol — universal design-before-you-build standard |
-| [Extensions](https://github.com/chitinhq/agentguard-extensions) | Drivers, integrations, policies, example swarms |
 
 ## Stack
 
@@ -170,7 +168,7 @@ The router picks the cheapest capable surface for each task (Ollama → GitHub A
 - [x] Request dedup + result caching (Redis, type-aware TTLs)
 - [x] Batches API queue (50% discount, async flush)
 - [x] Episodic + procedural memory (learned recipes from episode clusters)
-- [x] OctiBridge: AgentGuard CLI hooks → Octi Pulpo memory
+- [x] OctiBridge: Chitin CLI hooks → Octi Pulpo memory
 - [x] Dispatch adapters (GitHub Actions `repository_dispatch`, Anthropic API via ShellForge)
 - [x] Budget gating ($50/mo pool, priority-based thresholds, per-agent tracking)
 - [x] Cost-cascade router (Ollama → GH Actions → Anthropic API, cheapest-first)

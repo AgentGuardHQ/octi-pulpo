@@ -1,8 +1,8 @@
-# Copilot Instructions — Docs (agentguard-workspace)
+# Copilot Instructions — Docs (chitin-workspace)
 
 ## Purpose
 
-This repo is the **AgentGuard workspace root** — it contains strategy documents,
+This repo is the **Chitin workspace root** — it contains strategy documents,
 plans, configuration, and scripts. There is no application code here.
 
 ## Golden Rules

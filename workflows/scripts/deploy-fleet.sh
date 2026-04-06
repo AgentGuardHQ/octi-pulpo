@@ -27,18 +27,14 @@ done
 # ── Target repos ────────────────────────────────────────────────
 # Format: repo|default_branch|language
 FLEET=(
-  "chitinhq/agentguard|main|go"
-  "chitinhq/octi-pulpo|main|go"
+  "chitinhq/kernel|main|go"
+  "chitinhq/octi|main|go"
   "chitinhq/shellforge|main|go"
   "chitinhq/clawta|main|go"
   "chitinhq/sentinel|main|go"
   "chitinhq/llmint|main|go"
-  "chitinhq/agentguard-analytics|main|python"
-  "chitinhq/agentguard-cloud|main|typescript"
-  "chitinhq/agentguard-workspace|master|docs"
-  "chitinhq/agentguard-extensions|master|mixed"
-  "chitinhq/preflight|master|go"
   "chitinhq/homebrew-tap|main|ruby"
+  "chitinhq/chitin-workspace|master|docs"
 )
 
 # ── Track results ───────────────────────────────────────────────
