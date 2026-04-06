@@ -6,9 +6,9 @@ Wants=redis.service
 [Service]
 Type=forking
 User=jared
-WorkingDirectory=/home/jared/agentguard-workspace/octi-pulpo
-EnvironmentFile=/home/jared/agentguard-workspace/octi-pulpo/.env
-ExecStart=/bin/bash /home/jared/agentguard-workspace/octi-pulpo/scripts/start.sh
+WorkingDirectory=/home/jared/workspace/octi-pulpo
+EnvironmentFile=/home/jared/workspace/octi-pulpo/.env
+ExecStart=/bin/bash /home/jared/workspace/octi-pulpo/scripts/start.sh
 ExecStop=/bin/bash -c 'pkill -f "bin/octi-pulpo"; pkill -f "bin/octi-worker"; pkill -f "bin/octi-timer"'
 Restart=on-failure
 RestartSec=10

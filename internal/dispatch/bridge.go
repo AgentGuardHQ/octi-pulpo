@@ -7,7 +7,7 @@ import (
 	"syscall"
 )
 
-// BridgeToFileQueue writes a dispatched agent to the legacy queue file (~/.agentguard/queue.txt)
+// BridgeToFileQueue writes a dispatched agent to the legacy queue file (~/.chitin/queue.txt)
 // for backward compatibility with existing workers.
 //
 // Migration path:

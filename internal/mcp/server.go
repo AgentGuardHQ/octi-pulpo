@@ -178,7 +178,10 @@ func (s *Server) handleToolCall(req Request) Response {
 	}
 
 	ctx := context.Background()
-	agentID := os.Getenv("AGENTGUARD_AGENT_NAME")
+	agentID := os.Getenv("CHITIN_AGENT_NAME")
+	if agentID == "" {
+		agentID = os.Getenv("AGENTGUARD_AGENT_NAME") // backward compat
+	}
 	if agentID == "" {
 		agentID = "unknown"
 	}
@@ -1039,7 +1042,7 @@ func toolDefs() []ToolDef {
 				"properties": map[string]interface{}{
 					"content":        map[string]string{"type": "string", "description": "What you learned / observed / decided"},
 					"topics":         map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Topic tags"},
-					"squadNamespace": map[string]string{"type": "string", "description": "Optional squad namespace for isolation (e.g. 'octi-pulpo', 'agentguard'). Omit for root namespace."},
+					"squadNamespace": map[string]string{"type": "string", "description": "Optional squad namespace for isolation (e.g. 'octi-pulpo', 'chitin'). Omit for root namespace."},
 				},
 				"required": []string{"content", "topics"},
 			},

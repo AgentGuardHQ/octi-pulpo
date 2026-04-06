@@ -106,11 +106,11 @@ type Router struct {
 }
 
 // NewRouter creates a Router that reads driver health from the given directory.
-// If healthDir is empty, it defaults to ~/.agentguard/driver-health/.
+// If healthDir is empty, it defaults to ~/.chitin/driver-health/.
 func NewRouter(healthDir string) *Router {
 	if healthDir == "" {
 		home, _ := os.UserHomeDir()
-		healthDir = filepath.Join(home, ".agentguard", "driver-health")
+		healthDir = filepath.Join(home, ".chitin", "driver-health")
 	}
 	return &Router{healthDir: healthDir, tiers: driverTiers}
 }

@@ -87,11 +87,11 @@ func (ws *WebhookServer) SetBranchUpdater(bu *BranchUpdater) {
 }
 
 // NewWebhookServer creates a webhook handler backed by the dispatcher.
-// If secretFile is empty, it defaults to ~/.agentguard/webhook-secret.
+// If secretFile is empty, it defaults to ~/.chitin/webhook-secret.
 func NewWebhookServer(dispatcher *Dispatcher, secretFile string) *WebhookServer {
 	if secretFile == "" {
 		home, _ := os.UserHomeDir()
-		secretFile = filepath.Join(home, ".agentguard", "webhook-secret")
+		secretFile = filepath.Join(home, ".chitin", "webhook-secret")
 	}
 
 	var secret []byte
@@ -123,7 +123,7 @@ func (ws *WebhookServer) SetMemoryStore(m *memory.Store) {
 	ws.memoryStore = m
 }
 
-// handleMemoryStore receives memory entries from AgentGuard CLI hooks
+// handleMemoryStore receives memory entries from Chitin CLI hooks
 // via the Octi Bridge. This is how human CLI sessions feed the swarm's
 // episodic memory.
 func (ws *WebhookServer) handleMemoryStore(w http.ResponseWriter, r *http.Request) {
@@ -421,7 +421,7 @@ func (ws *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Strategy cascade: when roadmap.md or strategy/ changes are pushed to
-	// agentguard-workspace, diff roadmap against managed issues and sync.
+	// the workspace repo, diff roadmap against managed issues and sync.
 	if event.Type == EventPush && ws.cascadeHandler != nil {
 		if repo == "chitinhq/workspace" && event.Payload["touches_roadmap"] == "true" {
 			go func() {

@@ -36,7 +36,7 @@ type CascadeResult struct {
 
 // CascadeHandler diffs roadmap.md against open issues across repos and
 // creates/closes/relabels issues to keep them in sync with the strategy.
-// Triggered by push events to agentguard-workspace when roadmap.md changes.
+// Triggered by push events to the workspace repo when roadmap.md changes.
 type CascadeHandler struct {
 	ghToken     string   // GitHub PAT for creating/closing issues
 	apiKey      string   // Anthropic API key
@@ -72,11 +72,11 @@ func NewCascadeHandler(ghToken, apiKey, model string) *CascadeHandler {
 	}
 }
 
-// HandlePush is called when roadmap.md is pushed to agentguard-workspace.
+// HandlePush is called when roadmap.md is pushed to the workspace repo.
 // It fetches the roadmap, fetches existing cascade:managed issues, diffs them
 // via Claude, and executes the resulting actions.
 func (ch *CascadeHandler) HandlePush(ctx context.Context) (*CascadeResult, error) {
-	// 1. Fetch roadmap.md from agentguard-workspace
+	// 1. Fetch roadmap.md from workspace repo
 	roadmap, err := ch.fetchRoadmap(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("fetch roadmap: %w", err)
@@ -148,7 +148,7 @@ type managedIssue struct {
 
 func (ch *CascadeHandler) fetchRoadmap(ctx context.Context) (string, error) {
 	// Try roadmap.md first, then strategy/ directory
-	url := "https://api.github.com/repos/chitinhq/agentguard-workspace/contents/roadmap.md"
+	url := "https://api.github.com/repos/chitinhq/workspace/contents/roadmap.md"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err

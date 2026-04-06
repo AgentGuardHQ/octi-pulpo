@@ -7,7 +7,7 @@
 # Replaces the old deploy.sh + crontab + worker.sh approach with three Go binaries.
 set -euo pipefail
 
-WORKSPACE="${WORKSPACE_DIR:-$HOME/agentguard-workspace}"
+WORKSPACE="${WORKSPACE_DIR:-$HOME/workspace}"
 REPO="$WORKSPACE/octi-pulpo"
 
 # Source .env if present (contains COPILOT_PAT, etc.)
@@ -22,7 +22,7 @@ export GITHUB_TOKEN="${GITHUB_TOKEN:-${COPILOT_PAT:-}}"
 BIN="$REPO/bin"
 LOGDIR="$WORKSPACE/server/logs"
 REDIS_URL="${OCTI_REDIS_URL:-redis://localhost:6379}"
-NAMESPACE="${OCTI_NAMESPACE:-agentguard-workspace}"
+NAMESPACE="${OCTI_NAMESPACE:-octi}"
 WORKERS="${OCTI_WORKERS:-32}"
 HTTP_PORT="${OCTI_HTTP_PORT:-8787}"
 
@@ -47,8 +47,8 @@ OCTI_HTTP_PORT="$HTTP_PORT" \
 OCTI_DAEMON=1 \
 OCTI_REDIS_URL="$REDIS_URL" \
 OCTI_NAMESPACE="$NAMESPACE" \
-AGENTGUARD_HEALTH_DIR="$HOME/.agentguard/driver-health" \
-AGENTGUARD_WEBHOOK_SECRET_FILE="$HOME/.agentguard/webhook-secret" \
+CHITIN_HEALTH_DIR="$HOME/.chitin/driver-health" \
+CHITIN_WEBHOOK_SECRET_FILE="$HOME/.chitin/webhook-secret" \
 nohup "$BIN/octi-pulpo" > "$LOGDIR/octi-pulpo.log" 2>&1 &
 PULPO_PID=$!
 

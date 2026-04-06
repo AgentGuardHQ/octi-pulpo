@@ -66,8 +66,11 @@ func main() {
 	}
 	defer coord.Close()
 
-	healthDir := os.Getenv("AGENTGUARD_HEALTH_DIR")
-	router := routing.NewRouter(healthDir) // defaults to ~/.agentguard/driver-health/
+	healthDir := os.Getenv("CHITIN_HEALTH_DIR")
+	if healthDir == "" {
+		healthDir = os.Getenv("AGENTGUARD_HEALTH_DIR") // backward compat
+	}
+	router := routing.NewRouter(healthDir) // defaults to ~/.chitin/driver-health/
 
 	// Set up the event-driven dispatcher
 	opts, err := redis.ParseURL(redisURL)
@@ -79,9 +82,12 @@ func main() {
 	defer rdb.Close()
 
 	home, _ := os.UserHomeDir()
-	queueFile := os.Getenv("AGENTGUARD_QUEUE_FILE")
+	queueFile := os.Getenv("CHITIN_QUEUE_FILE")
 	if queueFile == "" {
-		queueFile = filepath.Join(home, ".agentguard", "queue.txt")
+		queueFile = os.Getenv("AGENTGUARD_QUEUE_FILE") // backward compat
+	}
+	if queueFile == "" {
+		queueFile = filepath.Join(home, ".chitin", "queue.txt")
 	}
 
 	eventRouter := dispatch.NewEventRouter(dispatch.DefaultRules())
@@ -152,7 +158,10 @@ func main() {
 	// Optional HTTP mode: run webhook server alongside MCP
 	httpPort := os.Getenv("OCTI_HTTP_PORT")
 	if httpPort != "" {
-		secretFile := os.Getenv("AGENTGUARD_WEBHOOK_SECRET_FILE")
+		secretFile := os.Getenv("CHITIN_WEBHOOK_SECRET_FILE")
+		if secretFile == "" {
+			secretFile = os.Getenv("AGENTGUARD_WEBHOOK_SECRET_FILE") // backward compat
+		}
 		ws := dispatch.NewWebhookServer(dispatcher, secretFile)
 		ws.SetSprintStore(sprintStore)
 		ws.SetBenchmark(benchmark)
@@ -226,7 +235,7 @@ func main() {
 			brain.SetProfileStore(profiles)
 			brain.SetStandupStore(standupStore)
 			// Wire task adapters: Clawta (local DeepSeek) → GH Actions (Copilot) fallback → Copilot SDK
-			clawtaBinary := filepath.Join(home, "agentguard-workspace", "clawta", "bench", "clawta-linux-amd64")
+			clawtaBinary := filepath.Join(home, "workspace", "clawta", "bench", "clawta-linux-amd64")
 			clawtaAdapter := dispatch.NewClawtaAdapter(clawtaBinary, "", "", "")
 			clawtaAdapter.SetLearner(taskLearner)
 			brain.SetAdapters(clawtaAdapter, ghActionsAdapter, copilotAdapter)

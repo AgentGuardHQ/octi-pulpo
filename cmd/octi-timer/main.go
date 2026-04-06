@@ -55,7 +55,7 @@ type timerEntry struct {
 }
 
 func main() {
-	schedPath := envOr("OCTI_SCHEDULE", filepath.Join(os.Getenv("HOME"), "agentguard-workspace", "server", "schedule.json"))
+	schedPath := envOr("OCTI_SCHEDULE", filepath.Join(os.Getenv("HOME"), "workspace", "server", "schedule.json"))
 	dispatcherURL := envOr("OCTI_DISPATCHER_URL", "http://localhost:8787")
 
 	// Parse schedule.json

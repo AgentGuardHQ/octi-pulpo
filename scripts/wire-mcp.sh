@@ -6,14 +6,14 @@
 #   make wire-mcp          # builds, installs, then wires
 #
 # Environment:
-#   AGENTGUARD_WORKSPACE   path to the workspace (default: ~/agentguard-workspace)
-#   INSTALL_DIR            where the binary lives (default: ~/.agentguard/bin)
+#   CHITIN_WORKSPACE       path to the workspace (default: ~/workspace)
+#   INSTALL_DIR            where the binary lives (default: ~/.chitin/bin)
 
 set -euo pipefail
 
-INSTALL_DIR="${INSTALL_DIR:-${HOME}/.agentguard/bin}"
+INSTALL_DIR="${INSTALL_DIR:-${HOME}/.chitin/bin}"
 BINARY="${INSTALL_DIR}/octi-pulpo"
-WORKSPACE="${AGENTGUARD_WORKSPACE:-${HOME}/agentguard-workspace}"
+WORKSPACE="${CHITIN_WORKSPACE:-${AGENTGUARD_WORKSPACE:-${HOME}/workspace}}"
 SETTINGS="${WORKSPACE}/.claude/settings.json"
 
 if [ ! -f "${BINARY}" ]; then

@@ -24,7 +24,7 @@ const (
 //
 // Usage:
 //
-//	n := NewNtfyNotifier("https://ntfy.sh", "agentguard-cto")
+//	n := NewNtfyNotifier("https://ntfy.sh", "chitin-cto")
 //	n.Post(ctx, "Budget exhausted", "codex circuit breaker OPEN", NtfyPriorityHigh)
 type NtfyNotifier struct {
 	baseURL string

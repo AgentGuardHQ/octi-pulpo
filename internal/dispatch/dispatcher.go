@@ -42,7 +42,7 @@ type Dispatcher struct {
 	events    *EventRouter
 	profiles  *ProfileStore // adaptive cooldowns (nil = use static)
 	budget    *budget.BudgetStore // per-agent budget check (nil = skip)
-	queueFile string              // ~/.agentguard/queue.txt (compatibility bridge)
+	queueFile string              // ~/.chitin/queue.txt (compatibility bridge)
 	namespace string
 }
 

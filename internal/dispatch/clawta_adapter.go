@@ -32,7 +32,7 @@ type ClawtaAdapter struct {
 
 // NewClawtaAdapter creates a ClawtaAdapter. Zero-value strings fall back to
 // defaults: binary="clawta", model="deepseek-chat", provider="deepseek",
-// workspace="$HOME/agentguard-workspace".
+// workspace="$HOME/workspace".
 func NewClawtaAdapter(binary, model, provider, workspace string) *ClawtaAdapter {
 	if binary == "" {
 		binary = defaultClawtaBinary
@@ -44,7 +44,7 @@ func NewClawtaAdapter(binary, model, provider, workspace string) *ClawtaAdapter 
 		provider = defaultClawtaProvider
 	}
 	if workspace == "" {
-		workspace = filepath.Join(os.Getenv("HOME"), "agentguard-workspace")
+		workspace = filepath.Join(os.Getenv("HOME"), "workspace")
 	}
 	return &ClawtaAdapter{
 		binary:    binary,

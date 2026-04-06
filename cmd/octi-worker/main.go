@@ -41,7 +41,7 @@ func main() {
 	redisURL := envOr("OCTI_REDIS_URL", "redis://localhost:6379")
 	namespace := envOr("OCTI_NAMESPACE", "octi")
 	workerCount := envInt("OCTI_WORKERS", 32)
-	workspaceDir := envOr("WORKSPACE_DIR", filepath.Join(os.Getenv("HOME"), "agentguard-workspace"))
+	workspaceDir := envOr("WORKSPACE_DIR", filepath.Join(os.Getenv("HOME"), "workspace"))
 	runAgentScript := envOr("OCTI_RUN_AGENT", filepath.Join(workspaceDir, "server", "run-agent.sh"))
 	scheduleFile := envOr("OCTI_SCHEDULE", filepath.Join(workspaceDir, "server", "schedule.json"))
 	pollInterval := 5 * time.Second
@@ -75,7 +75,10 @@ func main() {
 	}
 	defer coord.Close()
 
-	healthDir := os.Getenv("AGENTGUARD_HEALTH_DIR")
+	healthDir := os.Getenv("CHITIN_HEALTH_DIR")
+	if healthDir == "" {
+		healthDir = os.Getenv("AGENTGUARD_HEALTH_DIR") // backward compat
+	}
 	router := routing.NewRouter(healthDir)
 	healthDir = router.HealthDir() // resolve default if env was empty
 	eventRouter := dispatch.NewEventRouter(dispatch.DefaultRules())
