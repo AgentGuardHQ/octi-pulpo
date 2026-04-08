@@ -34,4 +34,12 @@ type AdapterResult struct {
 	Error     string  `json:"error,omitempty"`
 	Quality   float64 `json:"quality,omitempty"`   // 0.0–1.0 output quality score
 	Escalated bool    `json:"escalated,omitempty"` // true if retried at a higher tier
+
+	// Structured completion report fields (S4)
+	FilesChanged      []string `json:"files_changed,omitempty"`
+	TestsRun          int      `json:"tests_run,omitempty"`
+	TestsPassed       int      `json:"tests_passed,omitempty"`
+	KeyDecisions      []string `json:"key_decisions,omitempty"`
+	ChildAgents       int      `json:"child_agents,omitempty"`
+	MessagesExchanged int      `json:"messages_exchanged,omitempty"`
 }

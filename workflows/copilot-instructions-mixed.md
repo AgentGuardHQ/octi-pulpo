@@ -37,7 +37,7 @@ This repository contains code in multiple languages. Each language has its own d
 The following paths are off-limits. Do not create, edit, or delete them:
 
 - `.env` and any `.env.*` files
-- `agentguard.yaml`
+- `chitin.yaml`
 - `.claude/` directory and all contents
 
 ## Pipeline Labels

@@ -76,9 +76,6 @@ func main() {
 	defer coord.Close()
 
 	healthDir := os.Getenv("CHITIN_HEALTH_DIR")
-	if healthDir == "" {
-		healthDir = os.Getenv("AGENTGUARD_HEALTH_DIR") // backward compat
-	}
 	router := routing.NewRouter(healthDir)
 	healthDir = router.HealthDir() // resolve default if env was empty
 	eventRouter := dispatch.NewEventRouter(dispatch.DefaultRules())

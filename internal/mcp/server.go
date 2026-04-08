@@ -180,9 +180,6 @@ func (s *Server) handleToolCall(req Request) Response {
 	ctx := context.Background()
 	agentID := os.Getenv("CHITIN_AGENT_NAME")
 	if agentID == "" {
-		agentID = os.Getenv("AGENTGUARD_AGENT_NAME") // backward compat
-	}
-	if agentID == "" {
 		agentID = "unknown"
 	}
 

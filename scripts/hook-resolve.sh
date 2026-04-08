@@ -8,7 +8,6 @@
 #
 # Sets:
 #   CHITIN_BIN     — shell command prefix that works everywhere (may include cd)
-#   AGENTGUARD_BIN — alias for backward compat
 #   _AG_MAIN_ROOT  — path to the main (non-worktree) checkout
 
 # Resolve project root
@@ -17,8 +16,6 @@ _AG_PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 # Source persona env if available
 if [ -f "$_AG_PROJECT_ROOT/.chitin/persona.env" ]; then
   set -a; source "$_AG_PROJECT_ROOT/.chitin/persona.env"; set +a
-elif [ -f "$_AG_PROJECT_ROOT/.agentguard/persona.env" ]; then
-  set -a; source "$_AG_PROJECT_ROOT/.agentguard/persona.env"; set +a  # backward compat
 fi
 
 # Source workspace .env for telemetry config (API key, cloud endpoint, tenant ID)
@@ -37,12 +34,10 @@ fi
 # Resolve binary — priority: local dev > global install > main worktree fallback
 CHITIN_BIN=""
 
-# 1. Global install (npm install -g @red-codes/chitin or legacy agentguard)
+# 1. Global install (npm install -g @red-codes/chitin)
 #    Works in any directory — no worktree issues.
 if command -v chitin &>/dev/null; then
   CHITIN_BIN="chitin"
-elif command -v agentguard &>/dev/null; then
-  CHITIN_BIN="agentguard"  # backward compat
 fi
 
 # 2. Local dev (apps/cli/dist/bin.js in current or main worktree)
@@ -76,4 +71,3 @@ if [ -n "$CHITIN_BIN" ]; then
 fi
 
 export CHITIN_BIN
-export AGENTGUARD_BIN="$CHITIN_BIN"  # backward compat

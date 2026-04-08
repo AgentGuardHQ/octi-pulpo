@@ -52,7 +52,7 @@ These instructions apply to all Copilot-authored code in this repository.
 The following paths are off-limits. Do not create, edit, or delete them:
 
 - `.env` and any `.env.*` files
-- `agentguard.yaml`
+- `chitin.yaml`
 - `.claude/` directory and all contents
 
 ## Pipeline Labels

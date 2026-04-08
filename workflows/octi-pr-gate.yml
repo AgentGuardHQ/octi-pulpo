@@ -129,7 +129,7 @@ jobs:
 
           # Protected paths
           DIFF_FILES=$(gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only 2>/dev/null || echo "")
-          for pattern in ".env" ".npmrc" "id_rsa" "id_ed25519" "agentguard.yaml"; do
+          for pattern in ".env" ".npmrc" "id_rsa" "id_ed25519" "chitin.yaml"; do
             if echo "$DIFF_FILES" | grep -q "$pattern"; then
               FINDINGS="${FINDINGS}\n- ❌ Protected file modified: ${pattern}"
               STATUS="fail"
