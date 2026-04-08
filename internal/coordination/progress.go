@@ -26,7 +26,7 @@ func progressKey(namespace, contractID string) string {
 
 // PublishProgress publishes a snapshot to a Redis stream.
 // Stream key: {namespace}:progress:{contractID}
-// Auto-trims to ~1000 entries. Sets 1-hour TTL on first write.
+// Auto-trims to ~1000 entries. Refreshes 1-hour TTL on every publish.
 func PublishProgress(ctx context.Context, rdb *redis.Client, namespace string, snap ProgressSnapshot) error {
 	data, err := json.Marshal(snap)
 	if err != nil {
@@ -35,41 +35,22 @@ func PublishProgress(ctx context.Context, rdb *redis.Client, namespace string, s
 
 	key := progressKey(namespace, snap.ContractID)
 
-	// XADD returns the new entry ID.
-	id, err := rdb.XAdd(ctx, &redis.XAddArgs{
+	if _, err := rdb.XAdd(ctx, &redis.XAddArgs{
 		Stream: key,
 		Values: map[string]interface{}{"data": string(data)},
-	}).Result()
-	if err != nil {
+	}).Result(); err != nil {
 		return fmt.Errorf("xadd progress: %w", err)
 	}
 
-	// Trim to ~1000 entries (approximate).
+	// Trim to ~1000 entries and refresh TTL on every publish so
+	// long-running contracts don't expire mid-run.
 	pipe := rdb.Pipeline()
 	pipe.XTrimMaxLenApprox(ctx, key, 1000, 0)
+	pipe.Expire(ctx, key, time.Hour)
 
-	// Set TTL only on first write (when the stream had no entries before this one).
-	// We detect first write by checking whether the entry we just added is the
-	// very first one in the stream (its ID equals the result of XRANGE ... COUNT 1).
-	// Simpler heuristic: check stream length after add; if it's 1, set TTL.
-	pipe.XLen(ctx, key)
-
-	results, err := pipe.Exec(ctx)
-	if err != nil {
-		return fmt.Errorf("trim/len pipeline: %w", err)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("trim/expire pipeline: %w", err)
 	}
-
-	// results[1] is the XLen result.
-	if lenResult, ok := results[1].(*redis.IntCmd); ok {
-		if lenResult.Val() == 1 {
-			// First entry — set 1-hour TTL.
-			if err := rdb.Expire(ctx, key, time.Hour).Err(); err != nil {
-				return fmt.Errorf("expire progress stream: %w", err)
-			}
-		}
-	}
-
-	_ = id
 	return nil
 }
 
@@ -120,18 +101,20 @@ func ReadProgress(ctx context.Context, rdb *redis.Client, namespace string, cont
 }
 
 // DetectGap returns true if no snapshot has been published for the given contract
-// within the threshold duration.
+// within the threshold duration. Returns false if the stream doesn't exist
+// (never published — not the same as a gap in an active stream).
 func DetectGap(ctx context.Context, rdb *redis.Client, namespace string, contractID string, threshold time.Duration) (bool, error) {
 	key := progressKey(namespace, contractID)
 
-	entries, err := rdb.XRevRange(ctx, key, "+", "-").Result()
+	// Use COUNT 1 to fetch only the latest entry instead of the entire stream.
+	entries, err := rdb.XRevRangeN(ctx, key, "+", "-", 1).Result()
 	if err != nil {
 		return false, fmt.Errorf("xrevrange progress: %w", err)
 	}
 
-	// No entries at all — gap detected.
+	// No entries at all — stream never created, not an active gap.
 	if len(entries) == 0 {
-		return true, nil
+		return false, nil
 	}
 
 	// Parse the most recent snapshot to get its timestamp.
