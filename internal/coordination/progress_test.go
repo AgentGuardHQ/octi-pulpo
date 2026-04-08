@@ -139,8 +139,10 @@ func TestReadProgress_FromLastID(t *testing.T) {
 	_ = lastID
 }
 
-// TestDetectGap_NoRecent verifies that an empty stream reports a gap.
-func TestDetectGap_NoRecent(t *testing.T) {
+// TestDetectGap_NoStream verifies that a non-existent stream (never published)
+// does not report a gap — no stream means the contract never started publishing,
+// which is distinct from an active contract that stopped publishing.
+func TestDetectGap_NoStream(t *testing.T) {
 	rdb := newTestRedis(t)
 	ctx := context.Background()
 	ns := uniqueNS(t)
@@ -149,8 +151,8 @@ func TestDetectGap_NoRecent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DetectGap: %v", err)
 	}
-	if !gap {
-		t.Error("expected gap for empty stream, got false")
+	if gap {
+		t.Error("expected no gap for non-existent stream (never published)")
 	}
 }
 

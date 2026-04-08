@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/chitinhq/octi-pulpo/internal/budget"
@@ -128,11 +129,16 @@ func (d *Dispatcher) DispatchBudget(ctx context.Context, event Event, agentName 
 	}
 
 	// 2.7 Presence-based concurrency: if user is focused, limit concurrent claims to 2.
+	// On error, log and proceed (fail-open) rather than silently disabling throttling.
 	if d.presence != nil && d.presUser != "" {
-		state, _ := d.presence.Get(ctx, d.presUser)
-		if state == presence.Focused {
-			claims, _ := d.coord.ActiveClaims(ctx)
-			if len(claims) >= 2 {
+		state, presErr := d.presence.Get(ctx, d.presUser)
+		if presErr != nil {
+			fmt.Fprintf(os.Stderr, "dispatch: presence check failed: %v (proceeding without throttle)\n", presErr)
+		} else if state == presence.Focused {
+			claims, claimErr := d.coord.ActiveClaims(ctx)
+			if claimErr != nil {
+				fmt.Fprintf(os.Stderr, "dispatch: active claims check failed: %v (proceeding without throttle)\n", claimErr)
+			} else if len(claims) >= 2 {
 				result.Action = "skipped"
 				result.Reason = fmt.Sprintf("user focused — %d active claims (max 2)", len(claims))
 				d.recordDispatch(ctx, agentName, event, result)
