@@ -96,7 +96,7 @@ Standard sections for plans and specs:
 ## Do NOT
 
 - Add application code or library dependencies.
-- Modify `.agentguard-root-session` or `.agentguard/` files without explicit instruction.
+- Modify `.chitin-root-session` or `.chitin/` files without explicit instruction.
 - Create files outside the established directory structure.
 - Use emoji in document titles or headers.
 - Add images without confirming the asset is committed (no broken image links).

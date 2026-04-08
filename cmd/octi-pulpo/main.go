@@ -67,9 +67,6 @@ func main() {
 	defer coord.Close()
 
 	healthDir := os.Getenv("CHITIN_HEALTH_DIR")
-	if healthDir == "" {
-		healthDir = os.Getenv("AGENTGUARD_HEALTH_DIR") // backward compat
-	}
 	router := routing.NewRouter(healthDir) // defaults to ~/.chitin/driver-health/
 
 	// Set up the event-driven dispatcher
@@ -83,9 +80,6 @@ func main() {
 
 	home, _ := os.UserHomeDir()
 	queueFile := os.Getenv("CHITIN_QUEUE_FILE")
-	if queueFile == "" {
-		queueFile = os.Getenv("AGENTGUARD_QUEUE_FILE") // backward compat
-	}
 	if queueFile == "" {
 		queueFile = filepath.Join(home, ".chitin", "queue.txt")
 	}
@@ -159,9 +153,6 @@ func main() {
 	httpPort := os.Getenv("OCTI_HTTP_PORT")
 	if httpPort != "" {
 		secretFile := os.Getenv("CHITIN_WEBHOOK_SECRET_FILE")
-		if secretFile == "" {
-			secretFile = os.Getenv("AGENTGUARD_WEBHOOK_SECRET_FILE") // backward compat
-		}
 		ws := dispatch.NewWebhookServer(dispatcher, secretFile)
 		ws.SetSprintStore(sprintStore)
 		ws.SetBenchmark(benchmark)

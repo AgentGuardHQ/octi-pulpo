@@ -52,5 +52,5 @@ Approve the PR if:
 2. Tests pass
 3. TypeScript compilation succeeds with no errors
 4. Code does what the PR description claims
-5. No protected files (`.env`, `agentguard.yaml`, `.claude/`) are modified
+5. No protected files (`.env`, `chitin.yaml`, `.claude/`) are modified
 6. Pipeline labels are not manually altered

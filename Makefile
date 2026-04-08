@@ -1,6 +1,6 @@
 .PHONY: all build clean install wire-mcp octi-pulpo octi-worker octi-timer
 
-INSTALL_DIR ?= $(HOME)/.agentguard/bin
+INSTALL_DIR ?= $(HOME)/.chitin/bin
 
 all: build
 

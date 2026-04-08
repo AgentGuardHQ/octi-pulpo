@@ -69,7 +69,7 @@ Task affinity rules ensure complex work is not routed below its minimum tier.
 
 ```bash
 make build            # produces bin/octi-pulpo, bin/octi-worker, bin/octi-timer
-make install          # copies binaries to ~/.agentguard/bin/
+make install          # copies binaries to ~/.chitin/bin/
 ```
 
 Or build directly:
@@ -139,7 +139,7 @@ All configuration is via environment variables.
 | `SLACK_SIGNING_SECRET` | -- | Enables Slack Events API handler on `/slack/events` |
 | `SLACK_BOT_TOKEN` | -- | Slack bot token for posting messages |
 | `SLACK_WEBHOOK_URL` | -- | Slack incoming webhook for notifications |
-| `AGENTGUARD_HEALTH_DIR` | `~/.agentguard/driver-health/` | Driver health signal directory |
+| `CHITIN_HEALTH_DIR` | `~/.chitin/driver-health/` | Driver health signal directory |
 
 ## Development
 

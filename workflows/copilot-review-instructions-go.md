@@ -52,5 +52,5 @@ Approve the PR if:
 1. No must-fix issues found
 2. Tests pass (`go test ./...`)
 3. Code does what the PR description claims
-4. No protected files (`.env`, `agentguard.yaml`, `.claude/`) are modified
+4. No protected files (`.env`, `chitin.yaml`, `.claude/`) are modified
 5. Pipeline labels are not manually altered

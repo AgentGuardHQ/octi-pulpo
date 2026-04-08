@@ -1,6 +1,8 @@
 module github.com/chitinhq/octi-pulpo
 
-go 1.18
+go 1.21
+
+toolchain go1.22.12
 
 require github.com/redis/go-redis/v9 v9.18.0
 

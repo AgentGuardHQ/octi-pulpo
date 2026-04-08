@@ -13,7 +13,7 @@ set -euo pipefail
 
 INSTALL_DIR="${INSTALL_DIR:-${HOME}/.chitin/bin}"
 BINARY="${INSTALL_DIR}/octi-pulpo"
-WORKSPACE="${CHITIN_WORKSPACE:-${AGENTGUARD_WORKSPACE:-${HOME}/workspace}}"
+WORKSPACE="${CHITIN_WORKSPACE:-${HOME}/workspace}"
 SETTINGS="${WORKSPACE}/.claude/settings.json"
 
 if [ ! -f "${BINARY}" ]; then

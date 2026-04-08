@@ -52,7 +52,7 @@ golangci-lint run
 - Write to `.env`, SSH keys, credentials
 - Write or delete `.claude/` files
 - Execute `rm -rf` or destructive shell commands
-- Modify `agentguard.yaml` without explicit instruction
+- Modify `chitin.yaml` without explicit instruction
 
 ### ALWAYS
 - Create feature branches: `agent/<type>/issue-<N>`

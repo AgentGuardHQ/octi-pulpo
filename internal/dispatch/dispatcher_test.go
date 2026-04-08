@@ -274,7 +274,7 @@ func TestEventRouter_MatchesPROpened(t *testing.T) {
 
 	matches := er.Match(event)
 	if len(matches) == 0 {
-		t.Fatal("expected at least one match for pr.opened on chitinhq/agentguard")
+		t.Fatal("expected at least one match for pr.opened on chitinhq/chitin")
 	}
 
 	found := false
@@ -307,7 +307,7 @@ func TestEventRouter_MatchesCICompleted(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("expected pr-merger-agent-cloud to match ci.completed on agentguard-cloud")
+		t.Fatal("expected pr-merger-agent-cloud to match ci.completed on chitin-cloud")
 	}
 }
 
