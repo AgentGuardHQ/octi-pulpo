@@ -139,11 +139,13 @@ func main() {
 	anthropicAdapter := dispatch.NewAnthropicAdapter("", "")
 	ghActionsAdapter := dispatch.NewGHActionsAdapter("")
 	copilotAdapter := dispatch.NewCopilotAdapter("")
+	openclawAdapter := dispatch.NewOpenClawAdapter("", "", "", "")
 
 	// Wire learner for auto-store of task outcomes in episodic memory.
 	taskLearner := learner.New(mem)
 	anthropicAdapter.SetLearner(taskLearner)
 	copilotAdapter.SetLearner(taskLearner)
+	openclawAdapter.SetLearner(taskLearner)
 
 	server.SetAnthropicAdapter(anthropicAdapter)
 	server.SetGHActionsAdapter(ghActionsAdapter)
@@ -225,11 +227,11 @@ func main() {
 			brain.SetSprintStore(sprintStore)
 			brain.SetProfileStore(profiles)
 			brain.SetStandupStore(standupStore)
-			// Wire task adapters: Clawta (local DeepSeek) → GH Actions (Copilot) fallback → Copilot SDK
+			// Wire task adapters: Clawta → GH Actions (Copilot) → Copilot SDK → OpenClaw (Matrix)
 			clawtaBinary := filepath.Join(home, "workspace", "clawta", "bench", "clawta-linux-amd64")
 			clawtaAdapter := dispatch.NewClawtaAdapter(clawtaBinary, "", "", "")
 			clawtaAdapter.SetLearner(taskLearner)
-			brain.SetAdapters(clawtaAdapter, ghActionsAdapter, copilotAdapter)
+			brain.SetAdapters(clawtaAdapter, ghActionsAdapter, copilotAdapter, openclawAdapter)
 			if ghToken := os.Getenv("GITHUB_TOKEN"); ghToken != "" {
 				brain.SetGitHubToken(ghToken)
 			}
