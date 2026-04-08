@@ -195,6 +195,97 @@ func TestBroker_ContentTruncation(t *testing.T) {
 	}
 }
 
+func TestBroker_SendAndWait(t *testing.T) {
+	rdb, ns := newTestClient(t)
+	broker := messaging.NewBroker(rdb, ns)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Simulate the recipient replying from a goroutine.
+	go func() {
+		// Wait a moment for the subscription to be established.
+		time.Sleep(80 * time.Millisecond)
+
+		// The reply goes back: originalFrom="worker-a", originalTo="worker-b"
+		if err := broker.SendReply(ctx, "worker-a", "worker-b", "pong from worker-b"); err != nil {
+			// Can't call t.Fatal from a goroutine; log and let the select below catch the timeout.
+			t.Logf("SendReply error (goroutine): %v", err)
+		}
+	}()
+
+	reply, err := broker.SendAndWait(ctx, messaging.PeerMessage{
+		FromContract: "worker-a",
+		ToContract:   "worker-b",
+		Content:      "ping",
+		Type:         "info",
+	}, 3*time.Second)
+
+	if err != nil {
+		t.Fatalf("SendAndWait: %v", err)
+	}
+	if reply != "pong from worker-b" {
+		t.Errorf("reply: got %q, want %q", reply, "pong from worker-b")
+	}
+}
+
+func TestBroker_SendAndWait_Timeout(t *testing.T) {
+	rdb, ns := newTestClient(t)
+	broker := messaging.NewBroker(rdb, ns)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// No reply will come — expect a timeout error.
+	_, err := broker.SendAndWait(ctx, messaging.PeerMessage{
+		FromContract: "worker-a",
+		ToContract:   "worker-b",
+		Content:      "ping",
+		Type:         "info",
+	}, 300*time.Millisecond)
+
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("expected 'timed out' in error, got: %v", err)
+	}
+}
+
+func TestBroker_SendReply(t *testing.T) {
+	rdb, ns := newTestClient(t)
+	broker := messaging.NewBroker(rdb, ns)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Subscribe directly to the expected reply channel to verify routing.
+	// SendAndWait from "alpha" to "beta" listens on: {ns}:reply:alpha:beta
+	replyChannel := fmt.Sprintf("%s:reply:alpha:beta", ns)
+	ps := rdb.Subscribe(ctx, replyChannel)
+	if _, err := ps.Receive(ctx); err != nil {
+		t.Fatalf("subscribe reply channel: %v", err)
+	}
+	defer ps.Close()
+
+	time.Sleep(30 * time.Millisecond)
+
+	// SendReply(ctx, originalFrom="alpha", originalTo="beta", content)
+	// should publish to {ns}:reply:alpha:beta
+	if err := broker.SendReply(ctx, "alpha", "beta", "reply-content"); err != nil {
+		t.Fatalf("SendReply: %v", err)
+	}
+
+	select {
+	case raw := <-ps.Channel():
+		if raw.Payload != "reply-content" {
+			t.Errorf("reply payload: got %q, want %q", raw.Payload, "reply-content")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for reply message")
+	}
+}
+
 func TestBroker_InvalidType(t *testing.T) {
 	rdb, ns := newTestClient(t)
 	broker := messaging.NewBroker(rdb, ns)

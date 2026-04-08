@@ -139,6 +139,53 @@ func (b *Broker) ApproveBroadcast(ctx context.Context, msg PeerMessage, squad st
 	return nil
 }
 
+// SendAndWait sends a directed message and blocks until a reply arrives on
+// the reply channel, or timeout expires. Returns the reply content or error.
+// Reply channel: {ns}:reply:{msg.FromContract}:{msg.ToContract}
+func (b *Broker) SendAndWait(ctx context.Context, msg PeerMessage, timeout time.Duration) (string, error) {
+	replyChannel := fmt.Sprintf("%s:reply:%s:%s", b.namespace, msg.FromContract, msg.ToContract)
+
+	// Subscribe to the reply channel before sending so we don't miss the reply.
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	pubsub := b.rdb.Subscribe(timeoutCtx, replyChannel)
+	if _, err := pubsub.Receive(timeoutCtx); err != nil {
+		pubsub.Close()
+		return "", fmt.Errorf("messaging: subscribe reply channel %s: %w", replyChannel, err)
+	}
+	defer pubsub.Close()
+
+	// Send the directed message.
+	if err := b.SendDirected(ctx, msg); err != nil {
+		return "", fmt.Errorf("messaging: SendAndWait send: %w", err)
+	}
+
+	// Wait for first message on reply channel or timeout.
+	redisCh := pubsub.Channel()
+	select {
+	case raw, ok := <-redisCh:
+		if !ok {
+			return "", fmt.Errorf("messaging: reply channel closed unexpectedly")
+		}
+		return raw.Payload, nil
+	case <-timeoutCtx.Done():
+		return "", fmt.Errorf("messaging: SendAndWait timed out after %s waiting for reply from %s", timeout, msg.ToContract)
+	}
+}
+
+// SendReply sends a reply to a specific message's reply channel.
+// Publishes to {ns}:reply:{originalTo}:{originalFrom} (reversed — reply goes back to the original sender).
+func (b *Broker) SendReply(ctx context.Context, originalFrom, originalTo, content string) error {
+	// Note: reply channel is keyed from the original sender's perspective:
+	// {ns}:reply:{originalFrom}:{originalTo}
+	replyChannel := fmt.Sprintf("%s:reply:%s:%s", b.namespace, originalFrom, originalTo)
+	if err := b.rdb.Publish(ctx, replyChannel, content).Err(); err != nil {
+		return fmt.Errorf("messaging: SendReply to %s: %w", replyChannel, err)
+	}
+	return nil
+}
+
 // Subscribe returns a channel that receives messages for a given contract.
 // Subscribes to both directed ({ns}:msg:{contractID}) and broadcast ({ns}:broadcast:{squad}) channels.
 func (b *Broker) Subscribe(ctx context.Context, contractID string, squad string) (<-chan PeerMessage, error) {
