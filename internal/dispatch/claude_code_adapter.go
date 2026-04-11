@@ -66,9 +66,9 @@ func (a *ClaudeCodeAdapter) buildArgs(task *Task, worktreePath string) []string 
 	args := []string{
 		"-p", task.Prompt,
 		"--model", model,
-		"--permission-mode", "auto",
+		"--dangerously-skip-permissions",
 		"--max-turns", fmt.Sprintf("%d", maxTurns),
-		"--output-format", "stream-json",
+		"--output-format", "json",
 	}
 
 	// Include MCP config if it exists in the worktree.

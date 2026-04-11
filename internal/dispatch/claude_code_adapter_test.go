@@ -83,9 +83,9 @@ func TestClaudeCodeAdapterBuildArgs(t *testing.T) {
 
 		assertArg(t, args, "-p", "implement foo")
 		assertArg(t, args, "--model", "sonnet")
-		assertArg(t, args, "--permission-mode", "auto")
+		assertFlag(t, args, "--dangerously-skip-permissions")
 		assertArg(t, args, "--max-turns", "80")
-		assertArg(t, args, "--output-format", "stream-json")
+		assertArg(t, args, "--output-format", "json")
 		assertAbsent(t, args, "--mcp-config")
 	})
 
@@ -132,6 +132,16 @@ func TestClaudeCodeAdapterBuildArgs(t *testing.T) {
 }
 
 // assertArg checks that flag appears immediately followed by value in args.
+func assertFlag(t *testing.T, args []string, flag string) {
+	t.Helper()
+	for _, a := range args {
+		if a == flag {
+			return
+		}
+	}
+	t.Errorf("flag %q not found in args %v", flag, args)
+}
+
 func assertArg(t *testing.T, args []string, flag, value string) {
 	t.Helper()
 	for i, a := range args {

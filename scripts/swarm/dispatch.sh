@@ -69,8 +69,8 @@ OUTPUT_FILE="$LOG_DIR/${REPO}-${ISSUE_NUM}-${QUEUE}-$(date +%s).log"
 
 case "$PLATFORM" in
   claude)
-    # Use 'accept' permission mode so the agent can run gh commands for labels/comments
-    ARGS=(-p "$PROMPT" --model "$MODEL" --permission-mode accept --max-turns "$MAX_TURNS" --output-format json)
+    # Chitin hooks enforce governance — skip Claude's permission system
+    ARGS=(-p "$PROMPT" --model "$MODEL" --dangerously-skip-permissions --max-turns "$MAX_TURNS" --output-format json)
     [[ -f "$MCP_CONFIG" ]] && ARGS+=(--mcp-config "$MCP_CONFIG")
 
     # Unset ANTHROPIC_API_KEY so claude -p uses Max plan OAuth, not a stale API key
