@@ -11,7 +11,7 @@ type ModelRouter struct {
 func NewModelRouter() *ModelRouter {
 	return &ModelRouter{
 		copilotModels: map[string]string{
-			"low":  "gpt-5.4-nano",
+			"low":  "gpt-5.4-mini",
 			"med":  "gpt-5.4-mini",
 			"high": "gpt-5.4",
 		},
@@ -21,7 +21,6 @@ func NewModelRouter() *ModelRouter {
 			"high": "opus",
 		},
 		copilotLadder: map[string]string{
-			"gpt-5.4-nano": "gpt-5.4-mini",
 			"gpt-5.4-mini": "gpt-5.4",
 		},
 		claudeLadder: map[string]string{

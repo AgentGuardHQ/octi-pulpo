@@ -69,7 +69,7 @@ OUTPUT_FILE="$LOG_DIR/${REPO}-${ISSUE_NUM}-${QUEUE}-$(date +%s).log"
 
 case "$PLATFORM" in
   claude)
-    ARGS=(-p "$PROMPT" --model "$MODEL" --permission-mode auto --max-turns "$MAX_TURNS" --output-format stream-json --bare)
+    ARGS=(-p "$PROMPT" --model "$MODEL" --permission-mode auto --max-turns "$MAX_TURNS" --output-format json --bare)
     [[ -f "$MCP_CONFIG" ]] && ARGS+=(--mcp-config "$MCP_CONFIG")
 
     claude "${ARGS[@]}" > "$OUTPUT_FILE" 2>&1 || EXIT_CODE=$?

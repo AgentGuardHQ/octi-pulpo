@@ -67,7 +67,7 @@ func TestCopilotCLIAdapterBuildArgs(t *testing.T) {
 
 		// Verify required flags are present.
 		checkArgPair(t, args, "-p", "add a health endpoint")
-		checkArgPair(t, args, "--model", "gpt-5.4-nano")
+		checkArgPair(t, args, "--model", "gpt-5.4-mini")
 		checkArgPair(t, args, "--output-format", "json")
 		checkArgPair(t, args, "--max-autopilot-continues", "80")
 		checkArgFlag(t, args, "--yolo")

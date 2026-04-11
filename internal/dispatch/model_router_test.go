@@ -8,7 +8,7 @@ func TestModelRouter_CopilotModels(t *testing.T) {
 		complexity string
 		wantModel  string
 	}{
-		{"low", "gpt-5.4-nano"},
+		{"low", "gpt-5.4-mini"},
 		{"med", "gpt-5.4-mini"},
 		{"high", "gpt-5.4"},
 	}
@@ -40,13 +40,9 @@ func TestModelRouter_ClaudeModels(t *testing.T) {
 
 func TestModelRouter_EscalationModel(t *testing.T) {
 	r := NewModelRouter()
-	got, ok := r.EscalateCopilot("gpt-5.4-nano")
-	if !ok || got != "gpt-5.4-mini" {
-		t.Errorf("EscalateCopilot(nano) = %q, %v", got, ok)
-	}
-	got, ok = r.EscalateCopilot("gpt-5.4-mini")
+	got, ok := r.EscalateCopilot("gpt-5.4-mini")
 	if !ok || got != "gpt-5.4" {
-		t.Errorf("EscalateCopilot(mini) = %q, %v", got, ok)
+		t.Errorf("EscalateCopilot(gpt-5.4-mini) = %q, %v", got, ok)
 	}
 	_, ok = r.EscalateCopilot("gpt-5.4")
 	if ok {
@@ -64,8 +60,8 @@ func TestModelRouter_EscalationModel(t *testing.T) {
 
 func TestModelRouter_DefaultsToLow(t *testing.T) {
 	r := NewModelRouter()
-	if got := r.CopilotModel("unknown"); got != "gpt-5.4-nano" {
-		t.Errorf("CopilotModel(unknown) = %q, want gpt-5.4-nano", got)
+	if got := r.CopilotModel("unknown"); got != "gpt-5.4-mini" {
+		t.Errorf("CopilotModel(unknown) = %q, want gpt-5.4-mini", got)
 	}
 	if got := r.ClaudeModel(""); got != "sonnet" {
 		t.Errorf("ClaudeModel('') = %q, want sonnet", got)

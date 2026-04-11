@@ -45,13 +45,13 @@ func TestPipelineIntegration_SmokeTest(t *testing.T) {
 	}
 	copilotModel := mr.CopilotModel(comp)
 	claudeModel := mr.ClaudeModel(comp)
-	if copilotModel != "gpt-5.4-nano" {
-		t.Fatalf("CopilotModel(low) = %q, want gpt-5.4-nano", copilotModel)
+	if copilotModel != "gpt-5.4-mini" {
+		t.Fatalf("CopilotModel(low) = %q, want gpt-5.4-mini", copilotModel)
 	}
 	if claudeModel != "sonnet" {
 		t.Fatalf("ClaudeModel(low) = %q, want sonnet", claudeModel)
 	}
-	t.Log("✓ Model routing: low → gpt-5.4-nano (copilot), sonnet (claude)")
+	t.Log("✓ Model routing: low → gpt-5.4-mini (copilot), sonnet (claude)")
 
 	// --- Step 4: Stagger picks first platform ---
 	now := time.Now()
@@ -134,10 +134,10 @@ func TestPipelineIntegration_SmokeTest(t *testing.T) {
 	t.Log("✓ Q3 failure: needs-fix re-enters QueueBuild")
 
 	// --- Step 11: Escalation ladder ---
-	// Copilot: nano → mini
-	d := em.Escalate("copilot-cli", "gpt-5.4-nano", 1)
-	if d.Action != "retry-same-platform" || d.Model != "gpt-5.4-mini" {
-		t.Fatalf("Escalate copilot nano = %+v, want retry/mini", d)
+	// Copilot: mini → 5.4
+	d := em.Escalate("copilot-cli", "gpt-5.4-mini", 1)
+	if d.Action != "retry-same-platform" || d.Model != "gpt-5.4" {
+		t.Fatalf("Escalate copilot mini = %+v, want retry/gpt-5.4", d)
 	}
 	// Copilot: 5.4 → cross-platform to claude
 	d = em.Escalate("copilot-cli", "gpt-5.4", 2)
@@ -155,11 +155,11 @@ func TestPipelineIntegration_SmokeTest(t *testing.T) {
 		t.Fatalf("Escalate claude opus = %+v, want human", d)
 	}
 	// Too many attempts → human regardless
-	d = em.Escalate("copilot-cli", "gpt-5.4-nano", 4)
+	d = em.Escalate("copilot-cli", "gpt-5.4-mini", 4)
 	if d.Action != "human" {
 		t.Fatalf("Escalate 4 attempts = %+v, want human", d)
 	}
-	t.Log("✓ Escalation: nano→mini→5.4→cross-platform→sonnet→opus→human")
+	t.Log("✓ Escalation: mini→5.4→cross-platform→sonnet→opus→human")
 
 	// --- Step 12: Daily cap enforcement ---
 	freshSt := NewStaggerTracker(nil, "test")
