@@ -441,7 +441,7 @@ func (b *Brain) configDrivenDispatch(ctx context.Context) {
 			continue
 		}
 
-		issueKey := fmt.Sprintf("%s#%d", item.Repo, item.IssueNum)
+		issueKey := fmt.Sprintf("%s#%d", repoShortName(item.Repo), item.IssueNum)
 
 		// Skip if in skip list.
 		if b.skipList != nil && b.skipList.IsSkipped(issueKey) {
@@ -1048,6 +1048,11 @@ func (b *Brain) leverageForP0(ctx context.Context) *LeverageAction {
 
 	for _, item := range dispatchable {
 		if item.Priority == 0 {
+			// Check skip list before dispatching.
+			issueKey := fmt.Sprintf("%s#%d", repoShortName(item.Repo), item.IssueNum)
+			if b.skipList != nil && b.skipList.IsSkipped(issueKey) {
+				continue
+			}
 			agent := b.srForSquad(item.Squad)
 			if agent == "" {
 				continue
@@ -1075,21 +1080,26 @@ func (b *Brain) leverageForIdleAgents(ctx context.Context) *LeverageAction {
 		return nil
 	}
 
-	// Just assign the highest-priority sprint item
-	item := dispatchable[0]
-	agent := b.srForSquad(item.Squad)
-	if agent == "" {
-		return nil
+	// Walk dispatchable items, skip any in the skip list.
+	for _, item := range dispatchable {
+		issueKey := fmt.Sprintf("%s#%d", repoShortName(item.Repo), item.IssueNum)
+		if b.skipList != nil && b.skipList.IsSkipped(issueKey) {
+			continue
+		}
+		agent := b.srForSquad(item.Squad)
+		if agent == "" {
+			continue
+		}
+		return &LeverageAction{
+			Agent:    agent,
+			IssueNum: item.IssueNum,
+			Repo:     item.Repo,
+			Score:    5.0,
+			Reason:   fmt.Sprintf("idle agents detected, assigning sprint item: %s", item.Title),
+			TaskType: inferTaskType(item.Title),
+		}
 	}
-
-	return &LeverageAction{
-		Agent:    agent,
-		IssueNum: item.IssueNum,
-		Repo:     item.Repo,
-		Score:    5.0,
-		Reason:   fmt.Sprintf("idle agents detected, assigning sprint item: %s", item.Title),
-		TaskType: inferTaskType(item.Title),
-	}
+	return nil
 }
 
 // leverageForP0PRsMerge dispatches pr-merger-agent at the highest-priority item
@@ -1135,20 +1145,25 @@ func (b *Brain) leverageForNextSprint(ctx context.Context) *LeverageAction {
 		return nil
 	}
 
-	item := dispatchable[0]
-	agent := b.srForSquad(item.Squad)
-	if agent == "" {
-		return nil
+	for _, item := range dispatchable {
+		issueKey := fmt.Sprintf("%s#%d", repoShortName(item.Repo), item.IssueNum)
+		if b.skipList != nil && b.skipList.IsSkipped(issueKey) {
+			continue
+		}
+		agent := b.srForSquad(item.Squad)
+		if agent == "" {
+			continue
+		}
+		return &LeverageAction{
+			Agent:    agent,
+			IssueNum: item.IssueNum,
+			Repo:     item.Repo,
+			Score:    3.0,
+			Reason:   fmt.Sprintf("next sprint item (P%d): %s", item.Priority, item.Title),
+			TaskType: inferTaskType(item.Title),
+		}
 	}
-
-	return &LeverageAction{
-		Agent:    agent,
-		IssueNum: item.IssueNum,
-		Repo:     item.Repo,
-		Score:    3.0,
-		Reason:   fmt.Sprintf("next sprint item (P%d): %s", item.Priority, item.Title),
-		TaskType: inferTaskType(item.Title),
-	}
+	return nil
 }
 
 // executeLeverageAction dispatches the chosen action.
@@ -1474,4 +1489,13 @@ func inferTaskType(title string) string {
 	default:
 		return "code-gen"
 	}
+}
+
+// repoShortName extracts the repo name from "owner/repo" format.
+// "chitinhq/octi" → "octi", "octi" → "octi"
+func repoShortName(repo string) string {
+	if idx := strings.LastIndex(repo, "/"); idx >= 0 {
+		return repo[idx+1:]
+	}
+	return repo
 }
