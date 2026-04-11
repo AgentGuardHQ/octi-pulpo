@@ -37,7 +37,7 @@ log "Prompt assembled: $PROMPT_LEN chars"
 # ── Phase 3: Claim issue ─────────────────────────────────────────────
 log "Phase 3: Claiming issue #$ISSUE_NUM"
 
-gh api "repos/chitinhq/$REPO/issues/$ISSUE_NUM/labels" -f "labels[]=agent:claimed" >/dev/null 2>&1 || true
+gh api "repos/chitinhq/$REPO/issues/$ISSUE_NUM/labels" --input - <<< "{\"labels\":[\"agent:claimed\"]}" >/dev/null 2>&1 || true
 
 # ── Phase 4: Create worktree ─────────────────────────────────────────
 BRANCH="swarm/${QUEUE}-${ISSUE_NUM}"
@@ -105,7 +105,7 @@ if [[ "$EXIT_CODE" -eq 0 && "$POST_RESULT" -eq 0 ]]; then
     *)        NEXT_LABEL="" ;;
   esac
   if [[ -n "${NEXT_LABEL:-}" ]]; then
-    gh api "repos/chitinhq/$REPO/issues/$ISSUE_NUM/labels" -f "labels[]=$NEXT_LABEL" >/dev/null 2>&1
+    gh api "repos/chitinhq/$REPO/issues/$ISSUE_NUM/labels" --input - <<< "{\"labels\":[\"$NEXT_LABEL\"]}" >/dev/null 2>&1
     log "Advanced: $QUEUE → $NEXT_LABEL"
   fi
   RESULT="success"

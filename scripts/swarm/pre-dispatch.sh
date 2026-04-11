@@ -23,7 +23,8 @@ CURRENT_BRANCH=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)
 [[ "$CURRENT_BRANCH" == "$DEFAULT_BRANCH" ]] || err "repo $REPO is on branch $CURRENT_BRANCH, expected $DEFAULT_BRANCH"
 
 # 3. Working tree is clean — no uncommitted changes that could leak into worktree
-DIRTY=$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | head -1)
+# Only flag modified/staged files as dirty — untracked files are fine
+DIRTY=$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | grep -v '^??' | head -1 || true)
 [[ -z "$DIRTY" ]] || err "repo $REPO has uncommitted changes: $DIRTY"
 
 # 4. No conflicting worktrees for this issue
@@ -39,14 +40,17 @@ case "$PLATFORM" in
 esac
 
 # 6. No active interactive Claude session (for claude platform only)
-if [[ "$PLATFORM" == "claude" ]]; then
-  INTERACTIVE_CLAUDE=$(pgrep -f "claude" | while read pid; do
-    # Skip our own process tree
-    [[ "$pid" == "$$" ]] && continue
-    # Check if it's an interactive session (has a TTY)
-    if [[ -t 0 ]] 2>/dev/null || ls -la /proc/"$pid"/fd/0 2>/dev/null | grep -q "pts\|tty"; then
-      echo "$pid"
-    fi
+if [[ "$PLATFORM" == "claude" && "${OCTI_SKIP_SESSION_CHECK:-}" != "1" ]]; then
+  # Check for interactive Claude sessions by looking for claude processes with a TTY.
+  # Skip processes in our own process group (swarm dispatches).
+  INTERACTIVE_CLAUDE=$(pgrep -f "claude" 2>/dev/null | while read pid; do
+    # Skip if it's in our process tree
+    OUR_PGID=$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')
+    THEIR_PGID=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [[ "$OUR_PGID" == "$THEIR_PGID" ]] && continue
+    # Check if it has a controlling TTY (interactive session)
+    TTY=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
+    [[ "$TTY" != "?" && -n "$TTY" ]] && echo "$pid"
   done || true)
   [[ -z "$INTERACTIVE_CLAUDE" ]] || err "interactive Claude session detected (pid: $INTERACTIVE_CLAUDE) — swarm paused"
 fi
