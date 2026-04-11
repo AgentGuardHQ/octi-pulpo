@@ -245,6 +245,19 @@ func main() {
 				ntfyTopic = "ganglia"
 			}
 			brain.SetNotifier(dispatch.NewNtfyNotifier(ntfyBase, ntfyTopic))
+			// Wire swarm CLI adapters
+			modelRouter := dispatch.NewModelRouter()
+			claudeCodeAdapter := dispatch.NewClaudeCodeAdapter("", filepath.Join(home, "workspace"))
+			copilotCLIAdapter := dispatch.NewCopilotCLIAdapter("", filepath.Join(home, "workspace"))
+			staggerTracker := dispatch.NewStaggerTracker(rdb, namespace)
+			escalationMgr := dispatch.NewEscalationManager(modelRouter)
+			queueMachine := dispatch.NewQueueMachine()
+			brain.SetModelRouter(modelRouter)
+			brain.SetClaudeCodeAdapter(claudeCodeAdapter)
+			brain.SetCopilotCLIAdapter(copilotCLIAdapter)
+			brain.SetStagger(staggerTracker)
+			brain.SetEscalationManager(escalationMgr)
+			brain.SetQueueMachine(queueMachine)
 			// Give the Slack events handler access to the brain for constraint queries.
 			if ws.SlackEvents() != nil {
 				ws.SlackEvents().SetBrain(brain)

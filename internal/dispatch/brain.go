@@ -124,6 +124,24 @@ func (b *Brain) SetNotifier(n *NtfyNotifier) {
 	b.notifier = n
 }
 
+// SetQueueMachine wires the swarm queue state machine into the brain.
+func (b *Brain) SetQueueMachine(qm *QueueMachine) { b.queueMachine = qm }
+
+// SetStagger wires the stagger tracker into the brain.
+func (b *Brain) SetStagger(s *StaggerTracker) { b.stagger = s }
+
+// SetModelRouter wires the model router into the brain.
+func (b *Brain) SetModelRouter(mr *ModelRouter) { b.modelRouter = mr }
+
+// SetEscalationManager wires the escalation manager into the brain.
+func (b *Brain) SetEscalationManager(em *EscalationManager) { b.escalation = em }
+
+// SetClaudeCodeAdapter wires the Claude Code CLI adapter into the brain.
+func (b *Brain) SetClaudeCodeAdapter(a *ClaudeCodeAdapter) { b.claudeAdapter = a }
+
+// SetCopilotCLIAdapter wires the Copilot CLI adapter into the brain.
+func (b *Brain) SetCopilotCLIAdapter(a *CopilotCLIAdapter) { b.copilotAdapter = a }
+
 // Run starts the brain evaluation loop. Blocks until context is cancelled.
 // Set OCTI_BRAIN_DISPATCH=0 to disable CLI agent dispatch (use pipeline instead).
 func (b *Brain) Run(ctx context.Context) error {
