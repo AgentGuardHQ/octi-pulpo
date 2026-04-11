@@ -274,6 +274,9 @@ func main() {
 			}
 
 			skipList := dispatch.NewSkipList(rdb, namespace)
+			if n := skipList.LoadFromRedis(); n > 0 {
+				fmt.Fprintf(os.Stderr, "octi-pulpo: loaded %d skip-list entries from Redis\n", n)
+			}
 			brain.SetSkipList(skipList)
 
 			escalationMgr := dispatch.NewEscalationManager(modelRouter)

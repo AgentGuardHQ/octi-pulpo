@@ -37,6 +37,28 @@ func NewSkipList(rdb *redis.Client, namespace string) *SkipList {
 	}
 }
 
+// LoadFromRedis hydrates the in-memory skip list from Redis on startup.
+func (s *SkipList) LoadFromRedis() int {
+	if s.rdb == nil {
+		return 0
+	}
+	ctx := context.Background()
+	key := fmt.Sprintf("%s:skip-list", s.namespace)
+	members, err := s.rdb.ZRangeWithScores(ctx, key, 0, -1).Result()
+	if err != nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, m := range members {
+		issueKey := m.Member.(string)
+		addedAt := time.Unix(int64(m.Score), 0)
+		s.skipped[issueKey] = addedAt
+		s.rejections[issueKey] = s.Threshold // already skipped
+	}
+	return len(members)
+}
+
 // RecordRejection increments the rejection counter. If it hits the threshold,
 // the issue is added to the skip list.
 func (s *SkipList) RecordRejection(issueKey string) {
