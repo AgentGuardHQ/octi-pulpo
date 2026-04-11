@@ -16,9 +16,9 @@ import (
 
 // ReviewResult is the outcome of reviewing a PR.
 type ReviewResult struct {
-	Decision   string  `json:"decision"`   // "approve", "request_changes"
-	Summary    string  `json:"summary"`    // one-line summary
-	Comments   string  `json:"comments"`   // detailed review feedback
+	Decision   string  `json:"decision"` // "approve", "request_changes"
+	Summary    string  `json:"summary"`  // one-line summary
+	Comments   string  `json:"comments"` // detailed review feedback
 	Confidence float64 `json:"confidence"`
 	CostCents  int     `json:"cost_cents"`
 	Model      string  `json:"model"`
@@ -137,6 +137,8 @@ type prMetadata struct {
 	Additions int    `json:"additions"`
 	Deletions int    `json:"deletions"`
 	Files     int    `json:"changed_files"`
+	HeadRef   string `json:"head_ref,omitempty"`
+	CloneURL  string `json:"clone_url,omitempty"`
 }
 
 func (rh *ReviewHandler) fetchPR(ctx context.Context, repo string, prNumber int) (*prMetadata, error) {

@@ -71,6 +71,7 @@ LABELS=(
   "tier:c|0E8A16|Tier C — Copilot implementation"
   "tier:b-scope|FBCA04|Tier B — Needs planning/scoping"
   "tier:b-code|D93F0B|Tier B — Senior agent coding"
+  "tier:b-fixed|8E44AD|Tier B — Coding fixes applied"
   "tier:a-groom|B60205|Tier A — Human grooming required"
   "tier:a|B60205|Tier A — Human architect"
   "tier:ci-running|C2E0C6|CI running"
