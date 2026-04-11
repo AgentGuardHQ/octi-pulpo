@@ -70,6 +70,10 @@ type Brain struct {
 	stuckAgentAlerted    map[string]time.Time
 	inactiveSquadAlerted map[string]time.Time
 
+	// Swarm dispatch dedup: tracks recent dispatch attempts to avoid
+	// retrying the same issue every tick. Key: "repo#num", value: last attempt.
+	swarmAttempted map[string]time.Time
+
 	// Adapters for task-based dispatch (Clawta + GH Actions).
 	adapters []Adapter
 
@@ -96,6 +100,7 @@ func NewBrain(dispatcher *Dispatcher, chains ChainConfig) *Brain {
 		log:                  log.New(os.Stderr, "brain: ", log.LstdFlags),
 		stuckAgentAlerted:    make(map[string]time.Time),
 		inactiveSquadAlerted: make(map[string]time.Time),
+		swarmAttempted:       make(map[string]time.Time),
 	}
 }
 
@@ -308,6 +313,11 @@ func (b *Brain) maybeRunSwarmCycle(ctx context.Context) {
 		if c.queue != targetQueue {
 			continue
 		}
+		// Skip issues attempted in the last 30 minutes.
+		issueKey := fmt.Sprintf("%s#%d", c.item.Repo, c.item.IssueNum)
+		if last, ok := b.swarmAttempted[issueKey]; ok && time.Since(last) < 30*time.Minute {
+			continue
+		}
 		if best == nil || c.item.Priority < best.item.Priority {
 			best = c
 		}
@@ -315,6 +325,9 @@ func (b *Brain) maybeRunSwarmCycle(ctx context.Context) {
 	if best == nil {
 		return
 	}
+
+	// Record attempt before dispatching.
+	b.swarmAttempted[fmt.Sprintf("%s#%d", best.item.Repo, best.item.IssueNum)] = now
 
 	// Determine queue name and model for dispatch.
 	queueName := queueNameStr(targetQueue)
@@ -355,11 +368,19 @@ func (b *Brain) maybeRunSwarmCycle(ctx context.Context) {
 		out, err := cmd.CombinedOutput()
 		output := strings.TrimSpace(string(out))
 		if err != nil {
-			b.log.Printf("swarm: dispatch %s/%s#%d failed: %v\n%s",
-				best.item.Repo, queueName, best.item.IssueNum, err, lastLines(output, 10))
-			if b.notifier != nil {
-				b.notifier.Post(dispatchCtx, "swarm dispatch FAILED", fmt.Sprintf("%s#%d (%s/%s) — %v",
-					repoShort, best.item.IssueNum, platform, model, err), 4)
+			reason := extractDispatchReason(output)
+			// Suppress notifications for expected pre-check blocks.
+			quiet := isExpectedBlock(reason)
+			if quiet {
+				b.log.Printf("swarm: %s/%s#%d skipped: %s",
+					best.item.Repo, queueName, best.item.IssueNum, reason)
+			} else {
+				b.log.Printf("swarm: dispatch %s/%s#%d failed: %s",
+					best.item.Repo, queueName, best.item.IssueNum, reason)
+				if b.notifier != nil {
+					b.notifier.Post(dispatchCtx, "swarm dispatch FAILED",
+						fmt.Sprintf("%s#%d (%s/%s): %s", repoShort, best.item.IssueNum, platform, model, reason), 4)
+				}
 			}
 		} else {
 			b.log.Printf("swarm: dispatch %s/%s#%d succeeded via %s/%s",
@@ -387,6 +408,46 @@ func queueNameStr(q Queue) string {
 	default:
 		return "intake"
 	}
+}
+
+// extractDispatchReason pulls the human-readable failure reason from dispatch.sh output.
+// Looks for "PRE-DISPATCH FAIL:" or "ABORT:" lines. Falls back to last non-empty line.
+func extractDispatchReason(output string) string {
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "PRE-DISPATCH FAIL: ") {
+			return strings.TrimPrefix(line, "PRE-DISPATCH FAIL: ")
+		}
+		if strings.HasPrefix(line, "POST-DISPATCH FAIL: ") {
+			return strings.TrimPrefix(line, "POST-DISPATCH FAIL: ")
+		}
+	}
+	// Fallback: last non-empty line
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			return l
+		}
+	}
+	return "unknown error"
+}
+
+// isExpectedBlock returns true for pre-check failures that are normal and
+// shouldn't generate notifications (interactive session, already planned, etc).
+func isExpectedBlock(reason string) bool {
+	quietPatterns := []string{
+		"interactive Claude session detected",
+		"already has 'planned' label",
+		"already has 'implemented' label",
+		"already validated",
+		"already claimed",
+	}
+	for _, p := range quietPatterns {
+		if strings.Contains(reason, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // lastLines returns the last n lines of a string.
