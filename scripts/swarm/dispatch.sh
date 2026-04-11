@@ -54,6 +54,7 @@ fi
 
 # ── Phase 5: Dispatch agent (tokens spent here) ──────────────────────
 log "Phase 5: Dispatching $PLATFORM ($MODEL) for $QUEUE"
+DISPATCH_START=$(date +%s%N)
 
 # Max turns by queue (deterministic, not LLM-decided)
 case "$QUEUE" in
@@ -85,7 +86,9 @@ case "$PLATFORM" in
     ;;
 esac
 
-log "Agent finished with exit code $EXIT_CODE"
+DISPATCH_END=$(date +%s%N)
+DURATION_MS=$(( (DISPATCH_END - DISPATCH_START) / 1000000 ))
+log "Agent finished with exit code $EXIT_CODE (${DURATION_MS}ms)"
 
 # ── Phase 6: Deterministic post-validation (no tokens) ───────────────
 log "Phase 6: Post-dispatch validation"
@@ -119,7 +122,15 @@ fi
 # ── Phase 8: Log dispatch event ──────────────────────────────────────
 "$SCRIPT_DIR/log-dispatch.sh" "$PLATFORM" "$REPO" "$ISSUE_NUM" "$QUEUE" "$MODEL" "$RESULT"
 
-# ── Phase 9: Cleanup worktree ────────────────────────────────────────
+# ── Phase 9: Emit telemetry for sentinel ──────────────────────────────
+log "Phase 9: Emitting telemetry"
+"$SCRIPT_DIR/emit-telemetry.sh" "$PLATFORM" "$REPO" "$ISSUE_NUM" "$QUEUE" "$MODEL" "$RESULT" "$EXIT_CODE" "$DURATION_MS" || true
+
+# ── Phase 10: Sentinel evaluation ────────────────────────────────────
+log "Phase 10: Sentinel eval"
+"$SCRIPT_DIR/sentinel-eval.sh" 2>&1 | tail -10 || true
+
+# ── Phase 11: Cleanup worktree ───────────────────────────────────────
 if [[ -d "${WORKTREE_DIR:-}" ]]; then
   if [[ "$RESULT" == "success" && "$QUEUE" == "build" ]]; then
     log "Worktree kept for PR: $WORKTREE_DIR"
