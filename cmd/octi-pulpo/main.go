@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"github.com/chitinhq/octi-pulpo/internal/admission"
 	"github.com/chitinhq/octi-pulpo/internal/budget"
@@ -250,6 +253,29 @@ func main() {
 			claudeCodeAdapter := dispatch.NewClaudeCodeAdapter("", filepath.Join(home, "workspace"))
 			copilotCLIAdapter := dispatch.NewCopilotCLIAdapter("", filepath.Join(home, "workspace"))
 			staggerTracker := dispatch.NewStaggerTracker(rdb, namespace)
+
+			// Load platform config for config-driven dispatch.
+			platformConfigPath := filepath.Join(home, "workspace", "octi", "server", "platforms.json")
+			platformCfgHolder, err := dispatch.NewPlatformConfigHolder(platformConfigPath)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "platform config: %v (falling back to legacy dispatch)\n", err)
+			} else {
+				brain.SetPlatformConfig(platformCfgHolder)
+				// Register platforms in stagger tracker from config.
+				pcfg := platformCfgHolder.Get()
+				for _, name := range pcfg.Priority {
+					entry := pcfg.Platforms[name]
+					cooldown := 30 * time.Minute // default
+					if name == "claude" {
+						cooldown = 45 * time.Minute
+					}
+					staggerTracker.RegisterPlatform(name, cooldown, entry.DailyCap)
+				}
+			}
+
+			skipList := dispatch.NewSkipList(rdb, namespace)
+			brain.SetSkipList(skipList)
+
 			escalationMgr := dispatch.NewEscalationManager(modelRouter)
 			queueMachine := dispatch.NewQueueMachine()
 			brain.SetModelRouter(modelRouter)
@@ -262,6 +288,22 @@ func main() {
 			if ws.SlackEvents() != nil {
 				ws.SlackEvents().SetBrain(brain)
 			}
+
+			// Hot-reload platform config on SIGHUP.
+			go func() {
+				sigCh := make(chan os.Signal, 1)
+				signal.Notify(sigCh, syscall.SIGHUP)
+				for range sigCh {
+					if platformCfgHolder != nil {
+						if err := platformCfgHolder.Reload(); err != nil {
+							fmt.Fprintf(os.Stderr, "platform config reload: %v\n", err)
+						} else {
+							fmt.Fprintf(os.Stderr, "platform config reloaded\n")
+						}
+					}
+				}
+			}()
+
 			go func() {
 				if err := brain.Run(ctx); err != nil && ctx.Err() == nil {
 					fmt.Fprintf(os.Stderr, "brain: %v\n", err)
