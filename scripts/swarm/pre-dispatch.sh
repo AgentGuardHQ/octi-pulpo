@@ -12,6 +12,11 @@ QUEUE="${4:?queue required (intake|build|validate|groom)}"
 WORKSPACE="${OCTI_WORKSPACE:-$HOME/workspace}"
 REPO_DIR="$WORKSPACE/$REPO"
 
+# Special case: "workspace" repo IS the workspace directory itself
+if [[ "$REPO" == "workspace" ]]; then
+  REPO_DIR="$WORKSPACE"
+fi
+
 err() { echo "PRE-DISPATCH FAIL: $*" >&2; exit 1; }
 
 # 1. Repo exists and is a git repo
@@ -24,7 +29,16 @@ DIRTY=$(git -C "$REPO_DIR" status --porcelain 2>/dev/null | grep -v '^??' | head
 [[ -z "$DIRTY" ]] || err "repo $REPO has uncommitted changes: $DIRTY"
 
 # 3. Repo is on default branch (main or master) — auto-recover stale branches
-DEFAULT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "master")
+# Try symbolic-ref first, then fall back to checking which of main/master exists
+DEFAULT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || true)
+if [[ -z "$DEFAULT_BRANCH" ]]; then
+  # Detect default branch by checking which remote branch exists
+  if git -C "$REPO_DIR" rev-parse --verify origin/main &>/dev/null; then
+    DEFAULT_BRANCH="main"
+  else
+    DEFAULT_BRANCH="master"
+  fi
+fi
 CURRENT_BRANCH=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD)
 if [[ "$CURRENT_BRANCH" != "$DEFAULT_BRANCH" ]]; then
   echo "PRE-DISPATCH WARN: repo $REPO on branch $CURRENT_BRANCH, auto-recovering to $DEFAULT_BRANCH" >&2

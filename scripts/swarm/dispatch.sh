@@ -13,6 +13,11 @@ MODEL="${5:?model required}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE="${OCTI_WORKSPACE:-$HOME/workspace}"
 REPO_DIR="$WORKSPACE/$REPO"
+
+# Special case: "workspace" repo IS the workspace directory itself
+if [[ "$REPO" == "workspace" ]]; then
+  REPO_DIR="$WORKSPACE"
+fi
 MCP_CONFIG="$WORKSPACE/octi/mcp-swarm.json"
 LOG_DIR="${OCTI_LOG_DIR:-$HOME/.local/share/octi/swarm}"
 
@@ -156,7 +161,14 @@ if [[ -d "${WORKTREE_DIR:-}" ]]; then
 fi
 
 # ── Phase 12: Ensure main checkout is on default branch ─────────────
-DEFAULT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || echo "master")
+DEFAULT_BRANCH=$(git -C "$REPO_DIR" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||' || true)
+if [[ -z "$DEFAULT_BRANCH" ]]; then
+  if git -C "$REPO_DIR" rev-parse --verify origin/main &>/dev/null; then
+    DEFAULT_BRANCH="main"
+  else
+    DEFAULT_BRANCH="master"
+  fi
+fi
 CURRENT=$(git -C "$REPO_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
 if [[ "$CURRENT" != "$DEFAULT_BRANCH" ]]; then
   git -C "$REPO_DIR" checkout "$DEFAULT_BRANCH" 2>/dev/null || log "WARN: failed to return to $DEFAULT_BRANCH"
