@@ -1185,9 +1185,16 @@ func (b *Brain) executeLeverageAction(ctx context.Context, action LeverageAction
 		return
 	}
 
+	// Skip list check: don't dispatch issues that are blacklisted.
+	issueKey := fmt.Sprintf("%s#%d", repoShortName(action.Repo), action.IssueNum)
+	if b.skipList != nil && b.skipList.IsSkipped(issueKey) {
+		b.log.Printf("leverage: %s#%d -> SKIPPED (in skip list)", repoShortName(action.Repo), action.IssueNum)
+		return
+	}
+
 	// Adapter-based dispatch: create a Task and route to Clawta or GH Actions.
 	// Dedup: skip if we dispatched this issue recently (10 min cooldown).
-	dispatchKey := fmt.Sprintf("%s#%d", action.Repo, action.IssueNum)
+	dispatchKey := issueKey
 	if last, ok := b.stuckAgentAlerted[dispatchKey]; ok && time.Since(last) < 10*time.Minute {
 		return // already dispatched recently
 	}
