@@ -87,6 +87,10 @@ type Brain struct {
 	escalation     *EscalationManager
 	claudeAdapter  *ClaudeCodeAdapter
 	copilotAdapter *CopilotCLIAdapter
+
+	// Config-driven dispatch
+	platformConfig *PlatformConfigHolder
+	skipList       *SkipList
 }
 
 // NewBrain creates a dispatch brain.
@@ -147,6 +151,12 @@ func (b *Brain) SetClaudeCodeAdapter(a *ClaudeCodeAdapter) { b.claudeAdapter = a
 
 // SetCopilotCLIAdapter wires the Copilot CLI adapter into the brain.
 func (b *Brain) SetCopilotCLIAdapter(a *CopilotCLIAdapter) { b.copilotAdapter = a }
+
+// SetPlatformConfig wires the platform config holder into the brain.
+func (b *Brain) SetPlatformConfig(pc *PlatformConfigHolder) { b.platformConfig = pc }
+
+// SetSkipList wires the skip list into the brain.
+func (b *Brain) SetSkipList(sl *SkipList) { b.skipList = sl }
 
 // Run starts the brain evaluation loop. Blocks until context is cancelled.
 // Set OCTI_BRAIN_DISPATCH=0 to disable CLI agent dispatch (use pipeline instead).
@@ -250,6 +260,12 @@ func (b *Brain) maybeProbeDrivers(ctx context.Context) {
 // and dispatches via dispatch.sh to the selected CLI platform.
 func (b *Brain) maybeRunSwarmCycle(ctx context.Context) {
 	if b.queueMachine == nil || b.stagger == nil || b.sprintStore == nil {
+		return
+	}
+
+	// If platform config is available, use config-driven dispatch.
+	if b.platformConfig != nil {
+		b.configDrivenDispatch(ctx)
 		return
 	}
 
@@ -389,6 +405,167 @@ func (b *Brain) maybeRunSwarmCycle(ctx context.Context) {
 			if b.notifier != nil {
 				b.notifier.Post(dispatchCtx, "swarm dispatch OK", fmt.Sprintf("%s#%d (%s/%s → %s)",
 					repoShort, best.item.IssueNum, platform, model, queueName), 3)
+			}
+		}
+	}()
+}
+
+func (b *Brain) configDrivenDispatch(ctx context.Context) {
+	cfg := b.platformConfig.Get()
+	now := time.Now().UTC()
+
+	// Expire old skip list entries.
+	if b.skipList != nil {
+		b.skipList.ExpireOld()
+	}
+
+	// Scan sprint items and collect dispatchable candidates.
+	items, err := b.sprintStore.GetAll(ctx)
+	if err != nil {
+		b.log.Printf("swarm: sprint GetAll: %v", err)
+		return
+	}
+
+	type candidate struct {
+		item  sprint.SprintItem
+		queue Queue
+	}
+	var candidates []candidate
+
+	for _, item := range items {
+		if item.Status == "claimed" || item.Status == "done" || item.Status == "pr_open" || item.Status == "blocked" {
+			continue
+		}
+		q := b.queueMachine.ClassifyQueue(item.Labels)
+		if q == QueueDone || q == QueueHuman || q == QueueInProgress {
+			continue
+		}
+
+		issueKey := fmt.Sprintf("%s#%d", item.Repo, item.IssueNum)
+
+		// Skip if in skip list.
+		if b.skipList != nil && b.skipList.IsSkipped(issueKey) {
+			continue
+		}
+		// Skip if attempted recently (30 min dedup).
+		if last, ok := b.swarmAttempted[issueKey]; ok && time.Since(last) < 30*time.Minute {
+			continue
+		}
+
+		candidates = append(candidates, candidate{item: item, queue: q})
+	}
+
+	if len(candidates) == 0 {
+		return
+	}
+
+	// Pick the highest-priority queue, then the best item in it.
+	queueCounts := make(map[Queue]int)
+	for _, c := range candidates {
+		queueCounts[c.queue]++
+	}
+	targetQueue := b.queueMachine.PickHighestPriority(queueCounts)
+
+	var best *candidate
+	for i := range candidates {
+		c := &candidates[i]
+		if c.queue != targetQueue {
+			continue
+		}
+		if best == nil || c.item.Priority < best.item.Priority {
+			best = c
+		}
+	}
+	if best == nil {
+		return
+	}
+
+	queueName := queueNameStr(targetQueue)
+
+	// Walk platforms in priority order, find first match.
+	var chosenPlatform string
+	var chosenModel string
+	for _, name := range cfg.Priority {
+		entry := cfg.Platforms[name]
+		if !entry.Enabled {
+			continue
+		}
+		if !entry.AcceptsQueue(queueName) {
+			continue
+		}
+		if !b.stagger.IsAvailable(name, now) {
+			continue
+		}
+		if !b.stagger.IsUnderDailyCap(name, now) {
+			continue
+		}
+		chosenPlatform = name
+		chosenModel = entry.Model
+		break
+	}
+
+	if chosenPlatform == "" {
+		// No platform matched — record rejection.
+		issueKey := fmt.Sprintf("%s#%d", best.item.Repo, best.item.IssueNum)
+		if b.skipList != nil {
+			b.skipList.RecordRejection(issueKey)
+			if b.skipList.IsSkipped(issueKey) {
+				b.log.Printf("swarm: %s added to skip list — no platform accepts queue %s", issueKey, queueName)
+				if b.notifier != nil {
+					b.notifier.Post(ctx, "Unroutable issue",
+						fmt.Sprintf("%s (queue: %s) — skipped for 24h", issueKey, queueName), NtfyPriorityLow)
+				}
+			}
+		}
+		return
+	}
+
+	// Record attempt and dispatch.
+	issueKey := fmt.Sprintf("%s#%d", best.item.Repo, best.item.IssueNum)
+	b.swarmAttempted[issueKey] = now
+
+	repoShort := best.item.Repo
+	if idx := strings.LastIndex(repoShort, "/"); idx >= 0 {
+		repoShort = repoShort[idx+1:]
+	}
+
+	b.log.Printf("swarm: dispatching %s/%s#%d via %s/%s",
+		best.item.Repo, queueName, best.item.IssueNum, chosenPlatform, chosenModel)
+
+	home, _ := os.UserHomeDir()
+	dispatchScript := filepath.Join(home, "workspace", "octi", "scripts", "swarm", "dispatch.sh")
+	dispatchCtx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
+	cmd := exec.CommandContext(dispatchCtx, "bash", dispatchScript,
+		chosenPlatform, repoShort, strconv.Itoa(best.item.IssueNum), queueName, chosenModel)
+	cmd.Env = os.Environ()
+	cmd.Dir = filepath.Join(home, "workspace")
+
+	platform := chosenPlatform
+	go func() {
+		defer cancel()
+		out, err := cmd.CombinedOutput()
+		output := strings.TrimSpace(string(out))
+		if err != nil {
+			reason := extractDispatchReason(output)
+			quiet := isExpectedBlock(reason)
+			if quiet {
+				b.log.Printf("swarm: %s/%s#%d skipped: %s",
+					best.item.Repo, queueName, best.item.IssueNum, reason)
+			} else {
+				b.log.Printf("swarm: dispatch %s/%s#%d failed: %s",
+					best.item.Repo, queueName, best.item.IssueNum, reason)
+				if b.notifier != nil {
+					b.notifier.Post(dispatchCtx, "swarm dispatch FAILED",
+						fmt.Sprintf("%s#%d (%s/%s): %s", repoShort, best.item.IssueNum, platform, chosenModel, reason), 4)
+				}
+			}
+		} else {
+			b.log.Printf("swarm: dispatch %s/%s#%d succeeded via %s/%s",
+				best.item.Repo, queueName, best.item.IssueNum, platform, chosenModel)
+			b.stagger.RecordDispatch(platform, time.Now())
+			if b.notifier != nil {
+				b.notifier.Post(dispatchCtx, "swarm dispatch OK", fmt.Sprintf("%s#%d (%s/%s → %s)",
+					repoShort, best.item.IssueNum, platform, chosenModel, queueName), 3)
 			}
 		}
 	}()
