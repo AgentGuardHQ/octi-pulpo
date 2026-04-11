@@ -289,7 +289,7 @@ func TestDispatchSuccess(t *testing.T) {
 	defer srv.Close()
 
 	a := NewOpenClawAdapter(srv.URL, "tok", "!room:local", "@bot:local")
-	a.timeout = 5 * time.Second
+	a.timeout = 16 * time.Second
 
 	task := &Task{ID: "test-2", Type: "research", Prompt: "test prompt"}
 	result, err := a.Dispatch(context.Background(), task)

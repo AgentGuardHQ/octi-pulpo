@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,6 +42,7 @@ type CodingHandler struct {
 	apiKey      string              // Anthropic API key
 	model       string              // default: claude-3-5-sonnet-20241022 (Tier B uses Sonnet)
 	budgetStore *budget.BudgetStore // optional: budget enforcement
+	gitRunner   gitRunner           // optional: git command runner override for tests
 }
 
 // SetBudgetStore wires budget tracking into the coding handler.
@@ -59,9 +63,10 @@ func NewCodingHandler(ghToken, apiKey, model string) *CodingHandler {
 		model = "claude-3-5-sonnet-20241022" // Tier B uses Sonnet for complex coding
 	}
 	return &CodingHandler{
-		ghToken: ghToken,
-		apiKey:  apiKey,
-		model:   model,
+		ghToken:   ghToken,
+		apiKey:    apiKey,
+		model:     model,
+		gitRunner: execGitRunner{},
 	}
 }
 
@@ -104,34 +109,35 @@ func (c *CodingHandler) HandlePR(ctx context.Context, repo string, prNumber int)
 		return nil, fmt.Errorf("implement fix: %w", err)
 	}
 
-	// Apply the fixes if they were implemented
+	// Apply the fixes if they were implemented.
 	if result.Implemented && len(result.Files) > 0 {
-		applyErr := c.applyFixes(ctx, repo, prNumber, result)
-		if applyErr != nil {
-			// Log the error but don't fail the whole operation
+		if applyErr := c.applyFixes(ctx, repo, prNumber, prMeta, result); applyErr != nil {
 			fmt.Fprintf(os.Stderr, "[octi-pulpo] failed to apply fixes for PR #%d: %v\n", prNumber, applyErr)
-			// Update the result to reflect partial success
-			result.Summary = result.Summary + " (fixes generated but failed to apply)"
-			result.Changes = result.Changes + "\n\nNote: Failed to apply fixes automatically: " + applyErr.Error()
-		} else {
-			// Successfully applied fixes
-			result.Summary = result.Summary + " (fixes applied and committed)"
-			
-			// Post a comment on the PR
-			comment := fmt.Sprintf("## Tier B Coding: Fixes Applied\n\n%s\n\nChanges have been committed to the PR branch.", result.Changes)
-			if postErr := c.postComment(ctx, repo, prNumber, comment); postErr != nil {
-				fmt.Fprintf(os.Stderr, "[octi-pulpo] failed to post comment on PR #%d: %v\n", prNumber, postErr)
+			if commentErr := c.postComment(ctx, repo, prNumber, fmt.Sprintf(
+				"## Tier B Coding: Fix Application Failed\n\n%s\n\n**Error:** %v\n\nThe branch was not updated automatically.",
+				result.Changes, applyErr)); commentErr != nil {
+				fmt.Fprintf(os.Stderr, "[octi-pulpo] failed to post error comment on PR #%d: %v\n", prNumber, commentErr)
 			}
-			
-			// Remove the tier:b-code label since we've applied fixes
-			if removeErr := c.removeLabel(ctx, repo, prNumber, "tier:b-code"); removeErr != nil {
-				fmt.Fprintf(os.Stderr, "[octi-pulpo] failed to remove tier:b-code label from PR #%d: %v\n", prNumber, removeErr)
+			if labelErr := c.addLabel(ctx, repo, prNumber, "agent:stuck"); labelErr != nil {
+				fmt.Fprintf(os.Stderr, "[octi-pulpo] failed to add agent:stuck label to PR #%d: %v\n", prNumber, labelErr)
 			}
-			
-			// Add a tier:review label for re-review
-			if addErr := c.addLabel(ctx, repo, prNumber, "tier:review"); addErr != nil {
-				fmt.Fprintf(os.Stderr, "[octi-pulpo] failed to add tier:review label to PR #%d: %v\n", prNumber, addErr)
-			}
+			return result, fmt.Errorf("apply fixes: %w", applyErr)
+		}
+
+		comment := fmt.Sprintf(
+			"## Tier B Coding: Fixes Applied\n\n**Summary:** %s\n\n**Changes:**\n%s\n\nFiles updated:\n%s",
+			result.Summary,
+			result.Changes,
+			formatCodingFiles(result.Files),
+		)
+		if postErr := c.postComment(ctx, repo, prNumber, comment); postErr != nil {
+			fmt.Fprintf(os.Stderr, "[octi-pulpo] failed to post comment on PR #%d: %v\n", prNumber, postErr)
+		}
+		if removeErr := c.removeLabel(ctx, repo, prNumber, "tier:b-code"); removeErr != nil {
+			fmt.Fprintf(os.Stderr, "[octi-pulpo] failed to remove tier:b-code label from PR #%d: %v\n", prNumber, removeErr)
+		}
+		if addErr := c.addLabel(ctx, repo, prNumber, "tier:b-fixed"); addErr != nil {
+			fmt.Fprintf(os.Stderr, "[octi-pulpo] failed to add tier:b-fixed label to PR #%d: %v\n", prNumber, addErr)
 		}
 	}
 
@@ -296,8 +302,6 @@ set "implemented": false and explain why in "summary".`,
 	}, nil
 }
 
-
-
 type reviewComment struct {
 	Author string `json:"author"`
 	Body   string `json:"body"`
@@ -328,6 +332,12 @@ func (c *CodingHandler) fetchPR(ctx context.Context, repo string, prNumber int) 
 		User      struct {
 			Login string `json:"login"`
 		} `json:"user"`
+		Head struct {
+			Ref  string `json:"ref"`
+			Repo struct {
+				CloneURL string `json:"clone_url"`
+			} `json:"repo"`
+		} `json:"head"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
 		return nil, err
@@ -340,6 +350,8 @@ func (c *CodingHandler) fetchPR(ctx context.Context, repo string, prNumber int) 
 		Additions: pr.Additions,
 		Deletions: pr.Deletions,
 		Files:     pr.Files,
+		HeadRef:   pr.Head.Ref,
+		CloneURL:  pr.Head.Repo.CloneURL,
 	}, nil
 }
 
@@ -461,60 +473,132 @@ func (c *CodingHandler) postComment(ctx context.Context, repo string, prNumber i
 	return nil
 }
 
-// applyFixes applies the generated fixes to the PR branch by creating a commit
-// with the changes and pushing it to the remote repository.
-func (c *CodingHandler) applyFixes(ctx context.Context, repo string, prNumber int, result *CodingResult) error {
-	// First, we need to get the PR details to know the branch name
-	prURL := fmt.Sprintf("https://api.github.com/repos/%s/pulls/%d", repo, prNumber)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, prURL, nil)
+// applyFixes applies the generated fixes to the PR branch by cloning the
+// repository, checking out the PR branch, writing the updated files, committing
+// the changes, and pushing the branch back to origin.
+func (c *CodingHandler) applyFixes(ctx context.Context, repo string, prNumber int, pr *prMetadata, result *CodingResult) error {
+	if pr == nil {
+		return fmt.Errorf("missing PR metadata")
+	}
+	if pr.HeadRef == "" {
+		return fmt.Errorf("missing PR branch")
+	}
+	if pr.CloneURL == "" {
+		return fmt.Errorf("missing PR clone URL")
+	}
+
+	cloneURL, err := withGitToken(pr.CloneURL, c.ghToken)
 	if err != nil {
-		return fmt.Errorf("create PR request: %w", err)
+		return fmt.Errorf("prepare clone url: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.ghToken)
-	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := http.DefaultClient.Do(req)
+	tempDir, err := os.MkdirTemp("", "octi-coding-*")
 	if err != nil {
-		return fmt.Errorf("fetch PR: %w", err)
+		return fmt.Errorf("create temp dir: %w", err)
 	}
-	defer resp.Body.Close()
+	defer os.RemoveAll(tempDir)
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("failed to fetch PR: %d: %s", resp.StatusCode, string(body))
-	}
+	worktreeDir := filepath.Join(tempDir, "repo")
+	fmt.Fprintf(os.Stderr, "[octi-pulpo] applying fixes for PR #%d in %s\n", prNumber, repo)
 
-	var pr struct {
-		Head struct {
-			Ref string `json:"ref"`
-			Repo struct {
-				CloneURL string `json:"clone_url"`
-			} `json:"repo"`
-		} `json:"head"`
+	if _, err := c.runGit(ctx, "", "clone", cloneURL, worktreeDir); err != nil {
+		return fmt.Errorf("clone repo: %w", err)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&pr); err != nil {
-		return fmt.Errorf("parse PR response: %w", err)
+	if _, err := c.runGit(ctx, worktreeDir, "checkout", pr.HeadRef); err != nil {
+		return fmt.Errorf("checkout branch: %w", err)
 	}
 
-	// For now, we'll log what we would do since actually cloning and modifying
-	// the repository requires more infrastructure
-	fmt.Fprintf(os.Stderr, "[octi-pulpo] Would apply fixes to PR #%d in %s\n", prNumber, repo)
-	fmt.Fprintf(os.Stderr, "[octi-pulpo] Branch: %s\n", pr.Head.Ref)
-	fmt.Fprintf(os.Stderr, "[octi-pulpo] Clone URL: %s\n", pr.Head.Repo.CloneURL)
-	fmt.Fprintf(os.Stderr, "[octi-pulpo] Files to modify: %d\n", len(result.Files))
-	
-	for i, file := range result.Files {
-		fmt.Fprintf(os.Stderr, "[octi-pulpo] File %d: %s\n", i+1, file.Path)
+	for _, file := range result.Files {
+		if err := writeCodingFile(worktreeDir, file); err != nil {
+			return fmt.Errorf("apply file %s: %w", file.Path, err)
+		}
 	}
 
-	// In a real implementation, we would:
-	// 1. Clone the repository
-	// 2. Checkout the PR branch
-	// 3. Apply the fixes to each file
-	// 4. Commit the changes
-	// 5. Push to the remote branch
-	// 6. Return any errors
+	if _, err := c.runGit(ctx, worktreeDir, "add", "-A"); err != nil {
+		return fmt.Errorf("stage changes: %w", err)
+	}
 
-	// For now, return a placeholder error indicating this needs to be implemented
-	return fmt.Errorf("fix application not fully implemented (would modify %d files)", len(result.Files))
+	changed, err := c.runGit(ctx, worktreeDir, "diff", "--cached", "--name-only")
+	if err != nil {
+		return fmt.Errorf("inspect staged changes: %w", err)
+	}
+	if strings.TrimSpace(string(changed)) == "" {
+		return fmt.Errorf("no changes produced by fix application")
+	}
+
+	if _, err := c.runGit(ctx, worktreeDir,
+		"-c", "user.name=Octi Pulpo",
+		"-c", "user.email=noreply@chitinhq.com",
+		"commit",
+		"-m", "fix: apply Tier B coding fixes",
+		"-m", "Co-Authored-By: Octi Pulpo <noreply@chitinhq.com>",
+	); err != nil {
+		return fmt.Errorf("commit changes: %w", err)
+	}
+
+	if _, err := c.runGit(ctx, worktreeDir, "push", "origin", "HEAD:"+pr.HeadRef); err != nil {
+		return fmt.Errorf("push changes: %w", err)
+	}
+
+	return nil
+}
+
+type gitRunner interface {
+	CombinedOutput(ctx context.Context, dir string, args ...string) ([]byte, error)
+}
+
+type execGitRunner struct{}
+
+func (execGitRunner) CombinedOutput(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	return cmd.CombinedOutput()
+}
+
+func (c *CodingHandler) runGit(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	runner := c.gitRunner
+	if runner == nil {
+		runner = execGitRunner{}
+	}
+	return runner.CombinedOutput(ctx, dir, args...)
+}
+
+func withGitToken(rawURL, token string) (string, error) {
+	if token == "" {
+		return rawURL, nil
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return "", err
+	}
+	parsed.User = url.UserPassword("x-access-token", token)
+	return parsed.String(), nil
+}
+
+func writeCodingFile(root string, file CodingResultFile) error {
+	cleanPath := filepath.Clean(file.Path)
+	if cleanPath == "." || filepath.IsAbs(cleanPath) || cleanPath == ".." || strings.HasPrefix(cleanPath, ".."+string(os.PathSeparator)) {
+		return fmt.Errorf("invalid file path %q", file.Path)
+	}
+
+	targetPath := filepath.Join(root, cleanPath)
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(targetPath, []byte(file.Fixed), 0o644)
+}
+
+func formatCodingFiles(files []CodingResultFile) string {
+	if len(files) == 0 {
+		return "- none"
+	}
+
+	var b strings.Builder
+	for _, file := range files {
+		b.WriteString("- ")
+		b.WriteString(file.Path)
+		b.WriteByte('\n')
+	}
+	return strings.TrimSuffix(b.String(), "\n")
 }
