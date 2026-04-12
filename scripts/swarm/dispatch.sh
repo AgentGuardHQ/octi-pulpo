@@ -26,6 +26,44 @@ mkdir -p "$LOG_DIR"
 log() { echo "[$(date -u +%H:%M:%S)] $*"; }
 die() { log "ABORT: $*" >&2; exit 1; }
 
+# ── Phase 0: Open Chitin session ─────────────────────────────────────
+# The session wraps the entire dispatch so every downstream event
+# (pre-check, gate, telemetry) threads the same session id. If chitin
+# isn't installed we fall back to an empty id and the rest of the
+# script works unchanged — session_id in downstream JSON just ends up
+# blank rather than failing the dispatch.
+CHITIN_BIN="${CHITIN_BIN:-$(command -v chitin 2>/dev/null || true)}"
+CHITIN_SESSION_ID=""
+if [[ -n "$CHITIN_BIN" ]]; then
+  # Capture the active soul if any — not strictly needed since chitin
+  # will inherit automatically, but explicit fingerprinting is clearer
+  # in the persisted session record.
+  ACTIVE_SOUL=$("$CHITIN_BIN" soul status --format json 2>/dev/null | \
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('soul',''))" 2>/dev/null || echo "")
+  CHITIN_SESSION_ID=$("$CHITIN_BIN" session start \
+    --driver "$PLATFORM" \
+    --model "$MODEL" \
+    --role "$QUEUE" \
+    --soul "$ACTIVE_SOUL" 2>/dev/null | tail -1 || echo "")
+  if [[ -n "$CHITIN_SESSION_ID" ]]; then
+    log "Opened chitin session $CHITIN_SESSION_ID"
+  fi
+fi
+export CHITIN_SESSION_ID
+
+# Ensure the session is always closed on exit, even on `die` failure
+# paths. The EXIT trap runs under set -e without disturbing the
+# final exit code.
+cleanup_chitin_session() {
+  local rc=$?
+  if [[ -n "${CHITIN_SESSION_ID:-}" && -n "${CHITIN_BIN:-}" ]]; then
+    local reason="dispatch_done"
+    [[ "$rc" -ne 0 ]] && reason="dispatch_failed_rc${rc}"
+    "$CHITIN_BIN" session end --id "$CHITIN_SESSION_ID" --reason "$reason" >/dev/null 2>&1 || true
+  fi
+}
+trap cleanup_chitin_session EXIT
+
 # ── Phase 1: Deterministic pre-checks (no tokens) ────────────────────
 log "Phase 1: Pre-dispatch checks"
 
