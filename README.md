@@ -151,11 +151,17 @@ golangci-lint run       # lint
 
 ## Part of the Chitin Platform
 
-| Repo | Role |
-|------|------|
-| [Chitin Kernel](https://github.com/chitinhq/kernel) | Governance -- policy enforcement, gateway, telemetry |
-| **Octi Pulpo** | **Coordination -- scheduler, triage, dispatch, budget, routing** |
-| [ShellForge](https://github.com/chitinhq/shellforge) | Execution -- agent harness, sub-agent orchestration |
+Octi Pulpo is the swarm coordinator. Other repos:
+
+| Repo | Role | Start here if you want to… |
+|------|------|------------------------------|
+| [chitin](https://github.com/chitinhq/chitin) | Governance kernel — policy, invariants, hooks | Gate an agent you already use |
+| [shellforge](https://github.com/chitinhq/shellforge) | Local governed agent runtime | Run a governed agent end-to-end |
+| **octi** (this repo) | Swarm coordinator — triage, dispatch, routing | Orchestrate multiple agents |
+| [sentinel](https://github.com/chitinhq/sentinel) | Telemetry + detection on agent traces | Analyze how agents fail |
+| [llmint](https://github.com/chitinhq/llmint) | Token-economics middleware for LLM providers | Control LLM cost in Go apps |
+
+New to the platform? See [chitin's GETTING_STARTED.md](https://github.com/chitinhq/chitin/blob/main/GETTING_STARTED.md).
 
 ## License
 
