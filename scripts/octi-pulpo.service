@@ -1,3 +1,11 @@
+# Octi Pulpo systemd service template
+#
+# Setup:
+#   1. Copy this file to /etc/systemd/system/octi-pulpo.service
+#   2. Edit the copy to set OCTI_HOME to your install directory
+#   3. Set User to the account that runs Octi
+#   4. systemctl daemon-reload && systemctl enable octi-pulpo
+
 [Unit]
 Description=Octi Pulpo — Swarm Coordination Brain
 After=network.target redis.service
@@ -5,10 +13,10 @@ Wants=redis.service
 
 [Service]
 Type=forking
-User=jared
-WorkingDirectory=/home/jared/workspace/octi-pulpo
-EnvironmentFile=/home/jared/workspace/octi-pulpo/.env
-ExecStart=/bin/bash /home/jared/workspace/octi-pulpo/scripts/start.sh
+# User=<your-user>
+WorkingDirectory=%h/octi-pulpo
+EnvironmentFile=%h/octi-pulpo/.env
+ExecStart=/bin/bash %h/octi-pulpo/scripts/start.sh
 ExecStop=/bin/bash -c 'pkill -f "bin/octi-pulpo"; pkill -f "bin/octi-worker"; pkill -f "bin/octi-timer"'
 Restart=on-failure
 RestartSec=10
