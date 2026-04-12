@@ -5,6 +5,5 @@ bin/
 .env.*
 !.env.example
 outputs/
-.agentguard/
 .chitin/
 mcp-swarm.json
