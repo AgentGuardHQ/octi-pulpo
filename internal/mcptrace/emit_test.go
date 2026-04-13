@@ -87,11 +87,21 @@ func TestEmit_FallsBackToWorkspace(t *testing.T) {
 	}
 }
 
-func TestEmit_NoConfigIsNoop(t *testing.T) {
-	t.Setenv("MCPTRACE_FILE", "")
-	t.Setenv("CHITIN_WORKSPACE", "")
-	t.Setenv("HOME", "")
-	// Must not panic.
+func TestEmit_UnwritablePathIsNoop(t *testing.T) {
+	// Point MCPTRACE_FILE at a path that cannot be created (parent is a
+	// regular file, not a directory) and assert Emit returns without
+	// panicking. os.UserHomeDir may resolve a home even when HOME="", so
+	// we can't reliably test the "no destination at all" branch; instead
+	// we verify Emit swallows I/O errors silently.
+	dir := t.TempDir()
+	blocker := filepath.Join(dir, "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0600); err != nil {
+		t.Fatalf("seed blocker: %v", err)
+	}
+	dest := filepath.Join(blocker, "events.jsonl")
+	t.Setenv("MCPTRACE_FILE", dest)
+
+	// Must not panic, must return.
 	Emit("octi", "a", "ping", "allow", "", time.Now())
 }
 

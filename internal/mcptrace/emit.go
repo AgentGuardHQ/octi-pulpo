@@ -6,7 +6,7 @@
 // ts, sid, agent, tool, action, outcome, reason, source, latency_us.
 //
 // Destination:
-//   1. $MCPTRACE_FILE if set (absolute path)
+//   1. $MCPTRACE_FILE if set (treated as a path; absolute recommended)
 //   2. $CHITIN_WORKSPACE/.chitin/events.jsonl if CHITIN_WORKSPACE is set
 //   3. $HOME/.chitin/mcp_events.jsonl as a fallback
 //   4. no-op if none of the above resolve
@@ -26,10 +26,10 @@ type Event struct {
 	SessionID string `json:"sid,omitempty"`
 	Agent     string `json:"agent"`
 	Tool      string `json:"tool"`
-	Action    string `json:"action"`         // always "mcp_call" for MCP server events
-	Outcome   string `json:"outcome"`        // "allow" | "deny" (allow = success, deny = error)
+	Action    string `json:"action"`  // always "mcp_call" for MCP server events
+	Outcome   string `json:"outcome"` // "allow" | "deny" (allow = success, deny = error)
 	Reason    string `json:"reason,omitempty"`
-	Source    string `json:"source"`         // the MCP server name, e.g. "octi" or "atlas"
+	Source    string `json:"source"` // the MCP server name, e.g. "octi" or "atlas"
 	LatencyUs int64  `json:"latency_us"`
 }
 
@@ -38,7 +38,10 @@ var (
 )
 
 // Emit appends a single event to the configured JSONL file.
-// Never blocks the caller on errors — telemetry is best-effort.
+//
+// Best-effort; emission is synchronous file I/O under a write mutex, expected
+// microseconds on local disk but could block under I/O contention. Errors are
+// swallowed — telemetry must never break the caller.
 func Emit(source, agent, tool, outcome, reason string, start time.Time) {
 	path := destination()
 	if path == "" {
@@ -66,15 +69,17 @@ func Emit(source, agent, tool, outcome, reason string, start time.Time) {
 	writeMu.Lock()
 	defer writeMu.Unlock()
 
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return
 	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	f.Write(data)
+	if _, err := f.Write(data); err != nil {
+		return
+	}
 }
 
 // destination resolves the JSONL path from environment, or returns ""
