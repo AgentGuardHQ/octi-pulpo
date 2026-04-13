@@ -2,6 +2,7 @@ package coordination
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -188,6 +189,66 @@ func TestClaimTask_ClaimIDContainsAgentID(t *testing.T) {
 	}
 	if !strings.HasPrefix(claim.ClaimID, "my-agent:") {
 		t.Errorf("ClaimID %q should start with agent ID prefix", claim.ClaimID)
+	}
+}
+
+// TestActiveClaims_PrunesOrphanedZsetMembers covers issue #206:
+// when a claim holder dies without calling ReleaseClaim, the `claim:<agent>`
+// SET key auto-expires via Redis TTL but the zset member lingers forever.
+// ActiveClaims must ZREM stale members on read.
+func TestActiveClaims_PrunesOrphanedZsetMembers(t *testing.T) {
+	e, ctx := testSetup(t)
+	zkey := e.key("active-claims")
+
+	// Inject an orphaned claim: score far in the past, TTL short, no `claim:` SET key.
+	orphan := Claim{
+		ClaimID:    "ghost:1",
+		AgentID:    "ghost-agent",
+		Task:       "wedged forever",
+		ClaimedAt:  time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339),
+		TTLSeconds: 60,
+	}
+	data, _ := json.Marshal(orphan)
+	pastMilli := time.Now().Add(-1 * time.Hour).UnixMilli()
+	if err := e.rdb.ZAdd(ctx, zkey, redis.Z{Score: float64(pastMilli), Member: data}).Err(); err != nil {
+		t.Fatalf("seed zset: %v", err)
+	}
+
+	// Pre-check: member is present.
+	if n, _ := e.rdb.ZCard(ctx, zkey).Result(); n != 1 {
+		t.Fatalf("pre: want 1 zset member, got %d", n)
+	}
+
+	// Add a live claim so dispatch has something to return.
+	if _, err := e.ClaimTask(ctx, "live-agent", "real work", 300); err != nil {
+		t.Fatalf("ClaimTask: %v", err)
+	}
+
+	claims, err := e.ActiveClaims(ctx)
+	if err != nil {
+		t.Fatalf("ActiveClaims: %v", err)
+	}
+
+	// Orphan must not appear.
+	for _, c := range claims {
+		if c.AgentID == "ghost-agent" {
+			t.Error("orphaned ghost-agent claim leaked into ActiveClaims")
+		}
+	}
+
+	// Orphan must be ZREMed — the zset should only contain the live claim.
+	n, err := e.rdb.ZCard(ctx, zkey).Result()
+	if err != nil {
+		t.Fatalf("ZCard: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected zset pruned to 1 member, got %d", n)
+	}
+
+	// Confirm the surviving member is the live one.
+	members, _ := e.rdb.ZRange(ctx, zkey, 0, -1).Result()
+	if len(members) != 1 || !strings.Contains(members[0], "live-agent") {
+		t.Errorf("surviving member not live-agent: %v", members)
 	}
 }
 
