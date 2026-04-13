@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 	"time"
+
+	"github.com/chitinhq/octi-pulpo/internal/sprint"
 )
 
 func TestBrain_Tick_EmptyQueue(t *testing.T) {
@@ -192,6 +194,50 @@ func TestBrain_SelfHeal_NoProfileStore(t *testing.T) {
 
 	if len(brain.stuckAgentAlerted) != 0 || len(brain.inactiveSquadAlerted) != 0 {
 		t.Fatal("expected empty alert maps when no ProfileStore configured")
+	}
+}
+
+// TestBrain_PreGate_NoDispatchableCandidate verifies chitinhq/octi#201:
+// when there are no sprint items eligible for dispatch, maybeRunSwarmCycle
+// must skip entirely (no dispatch attempt recorded, no driver session spawn).
+func TestBrain_PreGate_NoDispatchableCandidate(t *testing.T) {
+	d, ctx := testSetup(t)
+	brain := NewBrain(d, DefaultChains())
+
+	// Wire minimal deps: sprint store + queue machine + stagger.
+	store := sprint.NewStore(d.RedisClient(), d.Namespace())
+	brain.SetSprintStore(store)
+	brain.SetQueueMachine(NewQueueMachine())
+	brain.SetStagger(NewStaggerTracker(d.RedisClient(), d.Namespace()))
+
+	// Case 1: empty store -> no candidate -> gate blocks cycle.
+	if brain.hasDispatchableCandidate(ctx) {
+		t.Fatal("expected no dispatchable candidate with empty store")
+	}
+	brain.maybeRunSwarmCycle(ctx)
+	if len(brain.swarmAttempted) != 0 {
+		t.Fatalf("pre-gate leaked: swarmAttempted=%d, expected 0", len(brain.swarmAttempted))
+	}
+
+	// Case 2: seed an item that IS dispatchable -> gate allows.
+	if err := store.Create(ctx, sprint.SprintItem{
+		Repo:     "chitinhq/octi",
+		IssueNum: 9999,
+		Title:    "pre-gate test",
+		Status:   "open",
+		Labels:   []string{"stage:implement"},
+	}); err != nil {
+		t.Fatalf("sprint create: %v", err)
+	}
+	if !brain.hasDispatchableCandidate(ctx) {
+		t.Fatal("expected dispatchable candidate after seeding open item")
+	}
+
+	// Case 3: mark that item as recently attempted (30 min dedup) -> gate blocks again.
+	brain.swarmAttempted["octi#9999"] = time.Now()
+	brain.swarmAttempted["chitinhq/octi#9999"] = time.Now()
+	if brain.hasDispatchableCandidate(ctx) {
+		t.Fatal("expected pre-gate to block when sole candidate is in 30-min dedup window")
 	}
 }
 

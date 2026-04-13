@@ -303,6 +303,16 @@ func (b *Brain) maybeRunSwarmCycle(ctx context.Context) {
 		return
 	}
 
+	// Pre-gate (chitinhq/octi#201): skip the entire cycle if no sprint item
+	// would actually be dispatchable right now. Eliminates the 60s dry-poll
+	// where every candidate is cooldown/stale-claim-blocked.
+	if !b.hasDispatchableCandidate(ctx) {
+		flow.Emit("swarm.brain.pregate_skip", flow.StatusCompleted, map[string]interface{}{
+			"reason": "no_dispatchable_candidate",
+		})
+		return
+	}
+
 	// If platform config is available, use config-driven dispatch.
 	if b.platformConfig != nil {
 		b.configDrivenDispatch(ctx)
@@ -660,6 +670,76 @@ func (b *Brain) configDrivenDispatch(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// hasDispatchableCandidate returns true if at least one sprint item would pass
+// the swarm cycle's candidate filters AND is not currently blocked by an active
+// swarm claim.
+//
+// This is the pre-gate for chitinhq/octi#201: the 60s brain tick spawns an
+// openclaw intake driver session every tick even when every candidate is
+// cooldown- or stale-claim-blocked. Checking dispatchability up-front lets us
+// skip the session spawn entirely (no work → no session → no log/telemetry
+// noise), while preserving full responsiveness the moment real work arrives.
+//
+// Cheap: only reads from sprint store (already cached), skipList, swarmAttempted
+// map, and active claims (single Redis read). Returns false on any error to
+// avoid spamming on transient failures.
+func (b *Brain) hasDispatchableCandidate(ctx context.Context) bool {
+	if b.sprintStore == nil || b.queueMachine == nil {
+		return false
+	}
+	items, err := b.sprintStore.GetAll(ctx)
+	if err != nil {
+		// On error, fall through and allow the cycle — safer than silently
+		// suppressing dispatch if sprint store is briefly unhealthy.
+		return true
+	}
+
+	// Collect set of issue keys with active swarm claims so we can skip them.
+	claimedKeys := make(map[string]struct{})
+	if coord := b.dispatcher.Coord(); coord != nil {
+		if claims, err := coord.ActiveClaims(ctx); err == nil {
+			for _, c := range claims {
+				// Claim.Task often looks like "repo#num" or contains it; match
+				// permissively by substring to catch both forms.
+				claimedKeys[c.Task] = struct{}{}
+			}
+		}
+	}
+
+	now := time.Now()
+	for _, item := range items {
+		if item.Status == "claimed" || item.Status == "done" ||
+			item.Status == "pr_open" || item.Status == "blocked" {
+			continue
+		}
+		q := b.queueMachine.ClassifyQueue(item.Labels)
+		if q == QueueDone || q == QueueHuman || q == QueueInProgress {
+			continue
+		}
+		issueKey := fmt.Sprintf("%s#%d", repoShortName(item.Repo), item.IssueNum)
+		fullKey := fmt.Sprintf("%s#%d", item.Repo, item.IssueNum)
+		if b.skipList != nil && b.skipList.IsSkipped(issueKey) {
+			continue
+		}
+		if last, ok := b.swarmAttempted[issueKey]; ok && now.Sub(last) < 30*time.Minute {
+			continue
+		}
+		if last, ok := b.swarmAttempted[fullKey]; ok && now.Sub(last) < 30*time.Minute {
+			continue
+		}
+		// Skip items already claimed in the swarm coordination engine (stale
+		// claim scenario from #200 still counts as "not dispatchable now").
+		if _, blocked := claimedKeys[issueKey]; blocked {
+			continue
+		}
+		if _, blocked := claimedKeys[fullKey]; blocked {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // queueNameStr maps Queue constants to the string names dispatch.sh expects.
