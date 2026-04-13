@@ -31,6 +31,37 @@ BOT_USER="${OPENCLAW_BOT_USER_ID:-@openclaw-bot:localhost}"
 mkdir -p "$LOG_DIR"
 log() { echo "[$(date -u +%H:%M:%S)] feed-openclaw: $*"; }
 
+# ── Flow emit helpers (chitin flow emit — no-op if chitin missing) ───
+# Pairs with sentinel analyzers (e.g. sentinel#47 unacked-dispatch) so a
+# dispatched-but-never-acked task is visible instead of a black hole.
+flow_emit() {
+  local name="$1" status="$2"; shift 2
+  command -v chitin >/dev/null 2>&1 || return 0
+  chitin flow emit "$name" "$status" "$@" 2>/dev/null || true
+}
+flow_start()    { flow_emit "$1" started "${@:2}"; }
+flow_complete() { flow_emit "$1" completed "${@:2}"; }
+flow_fail()     { flow_emit "$1" failed --reason "$2" "${@:3}"; }
+
+# Parent span — covers the whole run, closed via EXIT trap.
+PARENT_FLOW="swarm.feed_openclaw"
+PARENT_STATUS="completed"
+PARENT_REASON=""
+flow_start "$PARENT_FLOW"
+_feed_exit() {
+  local rc=$?
+  if [[ "$rc" -ne 0 && "$PARENT_STATUS" == "completed" ]]; then
+    PARENT_STATUS="failed"
+    PARENT_REASON="exit_rc${rc}"
+  fi
+  if [[ "$PARENT_STATUS" == "failed" ]]; then
+    flow_fail "$PARENT_FLOW" "${PARENT_REASON:-unknown}"
+  else
+    flow_complete "$PARENT_FLOW"
+  fi
+}
+trap _feed_exit EXIT
+
 # ── Preflight ────────────────────────────────────────────────────────
 if [[ -z "$TOKEN" || -z "$ROOM_ID" ]]; then
   log "SKIP: OCTI_MATRIX_TOKEN or OPENCLAW_ROOM_ID not set"
@@ -146,8 +177,16 @@ esac
 log "Dispatching $TASK_TYPE task"
 
 TXN_ID="feed-$(date +%s)-$$"
+GATEWAY_URL="$HOMESERVER/_matrix/client/r0/rooms/$ROOM_ID/send/m.room.message/$TXN_ID"
+TASK_FLOW="swarm.feed_openclaw.task.${TASK_TYPE}.dispatched"
+
+flow_start "$TASK_FLOW" \
+  --field "task=$TASK_TYPE" \
+  --field "gateway_url=$HOMESERVER" \
+  --field "txn_id=$TXN_ID"
+
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
-  "$HOMESERVER/_matrix/client/r0/rooms/$ROOM_ID/send/m.room.message/$TXN_ID" \
+  "$GATEWAY_URL" \
   -X PUT \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
@@ -157,7 +196,28 @@ if [[ "$HTTP_CODE" -eq 200 ]]; then
   log "OK: $TASK_TYPE dispatched (txn=$TXN_ID)"
   # Record dispatch
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) task=$TASK_TYPE status=dispatched" >> "$LOG_DIR/openclaw-feed.log"
+  flow_complete "$TASK_FLOW" \
+    --field "task=$TASK_TYPE" \
+    --field "txn_id=$TXN_ID" \
+    --field "http_code=$HTTP_CODE"
+
+  # Optional: confirm the gateway actually picked up the task.
+  # Pairs with sentinel#47 — a dispatched flow without an acknowledged
+  # sibling within N minutes becomes a silent-success finding.
+  ACK_FLOW="swarm.feed_openclaw.task.${TASK_TYPE}.acknowledged"
+  if ACK_STATUS=$(curl -sf --max-time 3 "http://127.0.0.1:18789/status" 2>/dev/null); then
+    flow_complete "$ACK_FLOW" \
+      --field "task=$TASK_TYPE" \
+      --field "txn_id=$TXN_ID" \
+      --field "gateway_status=ok"
+  fi
 else
   log "FAIL: Matrix returned $HTTP_CODE"
+  flow_fail "$TASK_FLOW" "http_$HTTP_CODE" \
+    --field "task=$TASK_TYPE" \
+    --field "txn_id=$TXN_ID" \
+    --field "http_code=$HTTP_CODE"
+  PARENT_STATUS="failed"
+  PARENT_REASON="task_${TASK_TYPE}_http_${HTTP_CODE}"
   exit 1
 fi
