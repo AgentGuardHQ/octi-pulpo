@@ -431,16 +431,19 @@ func TestMarkClosedItems_SilentLossRegression(t *testing.T) {
 
 	// Failure path — close the client so the next call's Redis ops error out.
 	// Against the pre-fix code this test file does not compile (wrong return
-	// arity). Against the post-fix code we assert: marked==0 (no over-count)
-	// and the function runs without panicking. Note Get may also error here,
-	// causing the loop to `continue`; that is acceptable — the contract under
-	// test is "do not claim success when Redis is unhealthy".
+	// arity). Against the post-fix code we assert: marked==0 (no over-count),
+	// AND err != nil (the Get failure must propagate, not be silently swallowed
+	// as "untracked"). Discarding err here is exactly how silent-loss could
+	// re-regress unnoticed.
 	if cErr := s.rdb.Close(); cErr != nil {
 		t.Fatalf("close client: %v", cErr)
 	}
-	marked2, _ := s.markClosedItems(ctx, repo, []int{8})
+	marked2, err2 := s.markClosedItems(ctx, repo, []int{8})
 	if marked2 != 0 {
 		t.Fatalf("silent-loss: expected 0 marked with torn-down client, got %d", marked2)
+	}
+	if err2 == nil {
+		t.Fatalf("silent-loss: expected non-nil err from torn-down client, got nil (Get errors must propagate, not be treated as untracked)")
 	}
 }
 

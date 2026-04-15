@@ -3,6 +3,7 @@ package sprint
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -674,7 +675,16 @@ func (s *Store) markClosedItems(ctx context.Context, repo string, issueNums []in
 		key := s.itemKey(repo, num)
 		raw, err := s.rdb.Get(ctx, key).Result()
 		if err != nil {
-			continue // not in sprint store
+			if errors.Is(err, redis.Nil) {
+				continue // not in sprint store
+			}
+			// Real Redis error — record and skip this item, but propagate so
+			// the caller knows the marked count is best-effort (silent-loss #244).
+			s.log.Printf("markClosed get %s#%d: %v", repo, num, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("redis get %s#%d: %w", repo, num, err)
+			}
+			continue
 		}
 		var item SprintItem
 		if err := json.Unmarshal([]byte(raw), &item); err != nil {
