@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/chitinhq/octi-pulpo/internal/admission"
+	"github.com/chitinhq/octi-pulpo/internal/bootcheck"
 	"github.com/chitinhq/octi-pulpo/internal/budget"
 	"github.com/chitinhq/octi-pulpo/internal/coordination"
 	"github.com/chitinhq/octi-pulpo/internal/dispatch"
@@ -153,6 +154,25 @@ func main() {
 	server.SetAnthropicAdapter(anthropicAdapter)
 	server.SetGHActionsAdapter(ghActionsAdapter)
 	server.SetCopilotAdapter(copilotAdapter)
+
+	// Boot-time telemetry self-audit (workspace#408 / Telemetry Truth).
+	// Never hard-fails boot — a crash-loop is just a louder lie.
+	bcCache := bootcheck.NewCache()
+	{
+		bcCtx, cancelBC := context.WithTimeout(context.Background(), 10*time.Second)
+		bcRep := bootcheck.Run(bcCtx, bootcheck.Deps{
+			RDB:         rdb,
+			Namespace:   namespace,
+			Router:      router,
+			Benchmark:   benchmark,
+			Profiles:    profiles,
+			GitHubToken: os.Getenv("GITHUB_TOKEN"),
+		})
+		cancelBC()
+		bcRep.Render(os.Stderr)
+		bcCache.Set(bcRep)
+	}
+	server.SetBootcheckCache(bcCache)
 
 	// Optional HTTP mode: run webhook server alongside MCP
 	httpPort := os.Getenv("OCTI_HTTP_PORT")
