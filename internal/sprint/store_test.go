@@ -329,7 +329,10 @@ func TestMarkClosedItems_MarksOpenAndPROpen(t *testing.T) {
 	}
 
 	// Closed issues on GitHub: #8 and #9. #10 already done. #11 in_progress should still become done.
-	marked := s.markClosedItems(ctx, repo, []int{8, 9, 10, 11})
+	marked, err := s.markClosedItems(ctx, repo, []int{8, 9, 10, 11})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if marked != 3 {
 		t.Fatalf("expected 3 marked, got %d", marked)
 	}
@@ -355,7 +358,10 @@ func TestMarkClosedItems_SkipsUntracked(t *testing.T) {
 	repo := "chitinhq/octi"
 
 	// Sprint store has no items for this repo
-	marked := s.markClosedItems(ctx, repo, []int{1, 2, 3})
+	marked, err := s.markClosedItems(ctx, repo, []int{1, 2, 3})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if marked != 0 {
 		t.Fatalf("expected 0 marked for untracked items, got %d", marked)
 	}
@@ -363,9 +369,78 @@ func TestMarkClosedItems_SkipsUntracked(t *testing.T) {
 
 func TestMarkClosedItems_EmptyList(t *testing.T) {
 	s, ctx := testStore(t)
-	marked := s.markClosedItems(ctx, "chitinhq/octi", []int{})
+	marked, err := s.markClosedItems(ctx, "chitinhq/octi", []int{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if marked != 0 {
 		t.Fatalf("expected 0 for empty list, got %d", marked)
+	}
+}
+
+// TestMarkClosedItems_SilentLossRegression mirrors PR #245
+// (DispatchBudget silent-loss fix) for chitinhq/octi#244.
+//
+// The pre-fix code did `s.rdb.Set(...)` with the error discarded and then
+// unconditionally `marked++`, producing a "marked N closed" log line while
+// the persisted Redis state was stale.
+//
+// Structural regression: the post-fix signature is `(int, error)`. This test
+// calls `marked, err := s.markClosedItems(...)` which does NOT compile against
+// the pre-fix signature (`int`) — i.e. merely applying this test file to the
+// parent commit is a build-break.
+//
+// Behavioral regression: we seed an open item, call markClosedItems, then
+// re-read the persisted item and confirm its Status == "done" (round-trip
+// honesty — counter and state agree on the happy path). We additionally
+// drive the failure path by pointing the store at a torn-down client and
+// asserting marked==0 (the counter cannot over-report). See also
+// tombstoneFromOpenSet in store.go for the sibling pattern this fix mirrors.
+func TestMarkClosedItems_SilentLossRegression(t *testing.T) {
+	s, ctx := testStore(t)
+	repo := "chitinhq/octi"
+	s.rdb.SAdd(ctx, s.key("sprint-repos"), repo)
+
+	item := SprintItem{
+		Squad: "octi-pulpo", IssueNum: 8, Repo: repo,
+		Title: "Cost routing", Priority: 0, Status: "open",
+	}
+	data, _ := json.Marshal(item)
+	s.rdb.Set(ctx, s.itemKey(repo, item.IssueNum), data, 0)
+
+	// Happy path — signature enforces (int, error). Pre-fix returned plain int.
+	marked, err := s.markClosedItems(ctx, repo, []int{8})
+	if err != nil {
+		t.Fatalf("happy path: unexpected err: %v", err)
+	}
+	if marked != 1 {
+		t.Fatalf("happy path: expected 1 marked, got %d", marked)
+	}
+	// Round-trip honesty: persisted state matches the claim.
+	raw, gErr := s.rdb.Get(ctx, s.itemKey(repo, 8)).Result()
+	if gErr != nil {
+		t.Fatalf("read back seeded item: %v", gErr)
+	}
+	var got SprintItem
+	if jErr := json.Unmarshal([]byte(raw), &got); jErr != nil {
+		t.Fatalf("unmarshal: %v", jErr)
+	}
+	if got.Status != "done" {
+		t.Fatalf("round-trip: expected status=done on successful mark, got %q", got.Status)
+	}
+
+	// Failure path — close the client so the next call's Redis ops error out.
+	// Against the pre-fix code this test file does not compile (wrong return
+	// arity). Against the post-fix code we assert: marked==0 (no over-count)
+	// and the function runs without panicking. Note Get may also error here,
+	// causing the loop to `continue`; that is acceptable — the contract under
+	// test is "do not claim success when Redis is unhealthy".
+	if cErr := s.rdb.Close(); cErr != nil {
+		t.Fatalf("close client: %v", cErr)
+	}
+	marked2, _ := s.markClosedItems(ctx, repo, []int{8})
+	if marked2 != 0 {
+		t.Fatalf("silent-loss: expected 0 marked with torn-down client, got %d", marked2)
 	}
 }
 

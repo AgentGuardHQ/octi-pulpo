@@ -645,18 +645,31 @@ func (s *Store) SyncClosed(ctx context.Context, repo string) error {
 		nums[i] = issue.Number
 	}
 
-	marked := s.markClosedItems(ctx, repo, nums)
+	marked, err := s.markClosedItems(ctx, repo, nums)
 	if marked > 0 {
 		s.log.Printf("marked %d closed issues as done in %s", marked, repo)
+	}
+	if err != nil {
+		// Don't fail the whole sync — partial progress is still useful — but
+		// surface the Redis failure so the caller knows the count is best-effort.
+		s.log.Printf("markClosedItems %s: %v", repo, err)
 	}
 	return nil
 }
 
 // markClosedItems marks sprint items for the given issue numbers as "done"
-// if they are currently open or pr_open. Returns the number of items marked.
-func (s *Store) markClosedItems(ctx context.Context, repo string, issueNums []int) int {
+// if they are currently open or pr_open. Returns the number of items actually
+// persisted to Redis and the first Redis SET error encountered, if any.
+//
+// The counter is only incremented after s.rdb.Set returns without error —
+// mirroring tombstoneFromOpenSet below. Previously the counter incremented
+// regardless of the SET result, so a Redis flap produced a silent-loss:
+// the caller logged "marked N closed" while the persisted state was stale.
+// See chitinhq/octi#244 and the sibling fix in workspace#408 / octi#245.
+func (s *Store) markClosedItems(ctx context.Context, repo string, issueNums []int) (int, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	var marked int
+	var firstErr error
 	for _, num := range issueNums {
 		key := s.itemKey(repo, num)
 		raw, err := s.rdb.Get(ctx, key).Result()
@@ -673,10 +686,16 @@ func (s *Store) markClosedItems(ctx context.Context, repo string, issueNums []in
 		item.Status = "done"
 		item.UpdatedAt = now
 		data, _ := json.Marshal(item)
-		s.rdb.Set(ctx, key, data, 0)
+		if err := s.rdb.Set(ctx, key, data, 0).Err(); err != nil {
+			s.log.Printf("markClosed %s#%d: %v", repo, num, err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("redis set %s#%d: %w", repo, num, err)
+			}
+			continue
+		}
 		marked++
 	}
-	return marked
+	return marked, firstErr
 }
 
 // tombstoneFromOpenSet marks sprint items as "done" when their issue number is
