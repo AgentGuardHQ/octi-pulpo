@@ -102,8 +102,6 @@ type Brain struct {
 	stagger        *StaggerTracker
 	modelRouter    *ModelRouter
 	escalation     *EscalationManager
-	claudeAdapter  *ClaudeCodeAdapter
-	copilotAdapter *CopilotCLIAdapter
 
 	// Config-driven dispatch
 	platformConfig *PlatformConfigHolder
@@ -162,12 +160,6 @@ func (b *Brain) SetModelRouter(mr *ModelRouter) { b.modelRouter = mr }
 
 // SetEscalationManager wires the escalation manager into the brain.
 func (b *Brain) SetEscalationManager(em *EscalationManager) { b.escalation = em }
-
-// SetClaudeCodeAdapter wires the Claude Code CLI adapter into the brain.
-func (b *Brain) SetClaudeCodeAdapter(a *ClaudeCodeAdapter) { b.claudeAdapter = a }
-
-// SetCopilotCLIAdapter wires the Copilot CLI adapter into the brain.
-func (b *Brain) SetCopilotCLIAdapter(a *CopilotCLIAdapter) { b.copilotAdapter = a }
 
 // SetPlatformConfig wires the platform config holder into the brain.
 func (b *Brain) SetPlatformConfig(pc *PlatformConfigHolder) { b.platformConfig = pc }
@@ -916,13 +908,10 @@ func (b *Brain) ProbeDrivers(ctx context.Context) {
 // driverProbeCommands maps driver names to the lightweight CLI command used
 // to verify reachability. Commands are intentionally non-destructive (version
 // checks or auth status only — no token consumption).
+// Ladder Forge II (2026-04-14): CLI-driver probes (claude-code, copilot,
+// codex, gemini, goose) pruned. Only openclaw retains a local CLI probe.
 var driverProbeCommands = map[string][]string{
-	"claude-code": {"claude", "--version"},
-	"copilot":     {"copilot", "--version"},
-	"codex":       {"codex", "--version"},
-	"gemini":      {"gemini", "--version"},
-	"goose":       {"goose", "--version"},
-	"openclaw":    {"openclaw", "--version"},
+	"openclaw": {"openclaw", "--version"},
 }
 
 // probeOneDriver runs a lightweight availability check for the given driver.
