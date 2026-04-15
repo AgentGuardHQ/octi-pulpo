@@ -2,6 +2,8 @@ package dispatch
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -17,25 +19,42 @@ import (
 
 // DispatchResult is the outcome of a dispatch decision.
 type DispatchResult struct {
-	Action    string `json:"action"`     // "dispatched", "skipped", "queued"
-	Agent     string `json:"agent"`      // agent name
-	Reason    string `json:"reason"`     // human-readable explanation
-	Driver    string `json:"driver"`     // chosen driver (empty if skipped)
-	Budget    string `json:"budget"`     // effective budget level: "low", "medium", "high"
-	QueuePos  int64  `json:"queue_pos"`  // position in queue (0 if not queued)
-	ClaimID   string `json:"claim_id"`   // coordination claim ID (empty if skipped)
-	Timestamp string `json:"timestamp"`
+	Action     string `json:"action"`      // "dispatched", "skipped", "queued"
+	Agent      string `json:"agent"`       // agent name
+	Reason     string `json:"reason"`      // human-readable explanation
+	Driver     string `json:"driver"`      // chosen driver (empty if skipped)
+	Budget     string `json:"budget"`      // effective budget level: "low", "medium", "high"
+	QueuePos   int64  `json:"queue_pos"`   // position in queue (0 if not queued)
+	ClaimID    string `json:"claim_id"`    // coordination claim ID (empty if skipped)
+	DispatchID string `json:"dispatch_id"` // correlation id for cross-sink reconcile (octi#257)
+	Timestamp  string `json:"timestamp"`
+}
+
+// newDispatchID mints a 16-byte hex correlation id that is threaded through
+// DispatchRecord (Redis) and repository_dispatch.client_payload.dispatch_id
+// (GitHub Actions) so Sentinel's DetectDispatchOrphans pass (sentinel#70) can
+// join the three truth sinks. Deliberately crypto/rand over a new ulid/uuid
+// dep — 128 bits of entropy, zero supply chain surface. See octi#257.
+func newDispatchID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// rand.Read on linux is infallible in practice; fall back to a
+		// time-based id so a dispatch is never un-joinable.
+		return fmt.Sprintf("t%x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // DispatchRecord is persisted to Redis for observability.
 type DispatchRecord struct {
-	Agent     string `json:"agent"`
-	Event     Event  `json:"event"`
-	Result    string `json:"result"` // action taken
-	Reason    string `json:"reason"`
-	Driver    string `json:"driver"`
-	Tier      string `json:"tier,omitempty"` // Ladder Forge tier: local|actions|cloud|desktop|human|unknown
-	Timestamp string `json:"timestamp"`
+	Agent      string `json:"agent"`
+	Event      Event  `json:"event"`
+	Result     string `json:"result"` // action taken
+	Reason     string `json:"reason"`
+	Driver     string `json:"driver"`
+	Tier       string `json:"tier,omitempty"`        // Ladder Forge tier: local|actions|cloud|desktop|human|unknown
+	DispatchID string `json:"dispatch_id,omitempty"` // correlation id joining Redis / gh runs / Neon (octi#257)
+	Timestamp  string `json:"timestamp"`
 }
 
 // ClassifyTier maps a driver (and event context) to a Ladder Forge tier.
@@ -139,9 +158,10 @@ func (d *Dispatcher) DispatchBudget(ctx context.Context, event Event, agentName 
 
 	now := time.Now().UTC()
 	result := DispatchResult{
-		Agent:     agentName,
-		Budget:    budget,
-		Timestamp: now.Format(time.RFC3339),
+		Agent:      agentName,
+		Budget:     budget,
+		DispatchID: newDispatchID(),
+		Timestamp:  now.Format(time.RFC3339),
 	}
 
 	// 0. Validate: repo-scoped events must carry a non-empty Repo.
@@ -296,10 +316,11 @@ func (d *Dispatcher) DispatchBudget(ctx context.Context, event Event, agentName 
 	}
 
 	task := &Task{
-		ID:       fmt.Sprintf("%s-%d", agentName, now.UnixNano()),
-		Type:     string(event.Type),
-		Repo:     event.Repo,
-		Priority: priorityStr(priority),
+		ID:         fmt.Sprintf("%s-%d", agentName, now.UnixNano()),
+		Type:       string(event.Type),
+		Repo:       event.Repo,
+		Priority:   priorityStr(priority),
+		DispatchID: result.DispatchID,
 	}
 
 	adapterResult, adapterErr := adapter.Dispatch(ctx, task)
@@ -502,14 +523,22 @@ func (d *Dispatcher) Coord() *coordination.Engine {
 }
 
 func (d *Dispatcher) recordDispatch(ctx context.Context, agentName string, event Event, result DispatchResult) {
+	// Defense-in-depth: every record persisted must carry a dispatch_id so
+	// Sentinel's DetectDispatchOrphans (sentinel#70) join key is never empty,
+	// even if a caller constructed DispatchResult outside DispatchBudget.
+	// See octi#257.
+	if result.DispatchID == "" {
+		result.DispatchID = newDispatchID()
+	}
 	record := DispatchRecord{
-		Agent:     agentName,
-		Event:     event,
-		Result:    result.Action,
-		Reason:    result.Reason,
-		Driver:    result.Driver,
-		Tier:      ClassifyTier(result.Driver, event),
-		Timestamp: result.Timestamp,
+		Agent:      agentName,
+		Event:      event,
+		Result:     result.Action,
+		Reason:     result.Reason,
+		Driver:     result.Driver,
+		Tier:       ClassifyTier(result.Driver, event),
+		DispatchID: result.DispatchID,
+		Timestamp:  result.Timestamp,
 	}
 	data, err := json.Marshal(record)
 	if err != nil {

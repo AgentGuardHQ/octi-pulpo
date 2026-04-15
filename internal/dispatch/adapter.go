@@ -20,6 +20,12 @@ type Task struct {
 	Budget   int      `json:"budget"`   // max cost in cents
 	Context  string   `json:"context"`  // pre-assembled context
 	System   string   `json:"system"`   // system prompt
+	// DispatchID is the correlation id minted by the dispatcher; adapters
+	// that surface tasks to remote runtimes (gh-actions repository_dispatch,
+	// etc.) must include it in the downstream payload so Sentinel can join
+	// Redis dispatch-log ↔ gh run events ↔ Neon execution_events. See
+	// octi#257 / sentinel#70.
+	DispatchID string `json:"dispatch_id,omitempty"`
 }
 
 // AdapterResult is the outcome of a dispatched task.
