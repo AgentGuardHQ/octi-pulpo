@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/chitinhq/octi-pulpo/internal/admission"
+	"github.com/chitinhq/octi-pulpo/internal/bootcheck"
 	"github.com/chitinhq/octi-pulpo/internal/budget"
 	"github.com/chitinhq/octi-pulpo/internal/coordination"
 	"github.com/chitinhq/octi-pulpo/internal/dispatch"
@@ -72,7 +73,11 @@ type Server struct {
 	promptCLIAdapter *dispatch.PromptCLIAdapter
 	rdb              *redis.Client
 	redisNS          string
+	bootcheckCache   *bootcheck.Cache
 }
+
+// SetBootcheckCache enables the bootcheck_status MCP tool.
+func (s *Server) SetBootcheckCache(c *bootcheck.Cache) { s.bootcheckCache = c }
 
 // New creates an MCP server backed by the given memory and coordination engines.
 func New(mem *memory.Store, coord *coordination.Engine, router *routing.Router) *Server {
@@ -591,6 +596,17 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 			return errorResp(req.ID, -32000, err.Error())
 		}
 		return textResult(req.ID, dispatch.FormatLeaderboard(entries))
+
+	case "bootcheck_status":
+		if s.bootcheckCache == nil {
+			return errorResp(req.ID, -32000, "bootcheck cache not initialized")
+		}
+		rep := s.bootcheckCache.Get()
+		if rep == nil {
+			return textResult(req.ID, "no bootcheck report available yet")
+		}
+		data, _ := json.Marshal(rep)
+		return textResult(req.ID, string(data))
 
 	case "request_work":
 		var args struct {
@@ -1306,6 +1322,14 @@ func toolDefs() []ToolDef {
 		{
 			Name:        "agent_leaderboard",
 			Description: "Rank all agents by productivity score. Returns a scored, sorted list with verdicts (promote/retain/monitor/fire) derived from commit output, reliability, and execution duration. Agents with no run history are omitted.",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		{
+			Name:        "bootcheck_status",
+			Description: "Return the most recent startup telemetry self-audit report (dispatch-log writable, benchmark counters wired, driver health fresh, leaderboard sink wired, adapter reachability). Each check is green/yellow/red. Use this to detect telemetry-lie failure modes from a remote MCP client.",
 			InputSchema: map[string]interface{}{
 				"type":       "object",
 				"properties": map[string]interface{}{},
