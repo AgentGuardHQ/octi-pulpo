@@ -42,6 +42,7 @@ type WebhookServer struct {
 	cascadeHandler     *CascadeHandler
 	draftConverter     *DraftConverter
 	copilotFix         *CopilotFixLoop
+	copilotIteration   *CopilotIterationLoop
 	branchUpdater      *BranchUpdater
 }
 
@@ -79,6 +80,13 @@ func (ws *WebhookServer) SetDraftConverter(dc *DraftConverter) {
 // when PR reviews request changes.
 func (ws *WebhookServer) SetCopilotFixLoop(cf *CopilotFixLoop) {
 	ws.copilotFix = cf
+}
+
+// SetCopilotIterationLoop enables the T2 internal-iteration loop — auto-mentions
+// @copilot on COMMENTED auto-reviewer feedback so PRs keep moving without
+// human intervention (capped at 3 iterations per PR).
+func (ws *WebhookServer) SetCopilotIterationLoop(ci *CopilotIterationLoop) {
+	ws.copilotIteration = ci
 }
 
 // SetBranchUpdater enables automatic PR branch updates when the default
@@ -333,11 +341,24 @@ func (ws *WebhookServer) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Copilot fix loop: auto-post @copilot comment when a review requests changes.
+	// Copilot iteration loop: auto-mention @copilot on COMMENTED auto-reviewer feedback.
 	if githubEvent == "pull_request_review" && action == "submitted" {
+		reviewState := getNestedString(payload, "review", "state")
+		prNumber := int(getNestedNumber(payload, "pull_request", "number"))
 		if ws.copilotFix != nil {
-			reviewState := getNestedString(payload, "review", "state")
-			prNumber := int(getNestedNumber(payload, "pull_request", "number"))
 			go ws.copilotFix.HandleReview(context.Background(), repo, prNumber, reviewState)
+		}
+		if ws.copilotIteration != nil {
+			in := ReviewInput{
+				Repo:        repo,
+				PRNumber:    prNumber,
+				ReviewerBot: getNestedString(payload, "review", "user", "login"),
+				ReviewState: reviewState,
+				PRAuthor:    getNestedString(payload, "pull_request", "user", "login"),
+				IsDraft:     getNestedBool(payload, "pull_request", "draft"),
+				ReviewBody:  getNestedString(payload, "review", "body"),
+			}
+			go ws.copilotIteration.HandleReview(context.Background(), in)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

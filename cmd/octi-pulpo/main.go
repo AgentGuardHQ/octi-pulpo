@@ -224,6 +224,13 @@ func main() {
 		cascadeHandler := dispatch.NewCascadeHandler("", "", "")
 		ws.SetCascadeHandler(cascadeHandler)
 
+		// Wire Copilot fix loop + iteration loop — keep Copilot PRs moving
+		// without human intervention. Both require a GitHub token.
+		if ghToken := os.Getenv("GITHUB_TOKEN"); ghToken != "" {
+			ws.SetCopilotFixLoop(dispatch.NewCopilotFixLoop(ghToken, rdb))
+			ws.SetCopilotIterationLoop(dispatch.NewCopilotIterationLoop(ghToken, rdb, dispatcher))
+		}
+
 		// Wire Slack Events API command handler when credentials are set.
 		if slackSecret := os.Getenv("SLACK_SIGNING_SECRET"); slackSecret != "" {
 			slackBotToken := os.Getenv("SLACK_BOT_TOKEN")
