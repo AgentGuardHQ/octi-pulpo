@@ -102,7 +102,7 @@ func TestAgentDriver_ReadsSchedule(t *testing.T) {
 		{"kernel-sr", "claude-code"},
 		{"kernel-qa", "copilot"},
 		{"codex-worker", "codex"},
-		{"unknown-agent", "claude-code"}, // default
+		{"unknown-agent", "clawta"}, // default
 	}
 
 	for _, tt := range tests {
@@ -117,8 +117,8 @@ func TestAgentDriver_ReadsSchedule(t *testing.T) {
 
 func TestAgentDriver_MissingFile(t *testing.T) {
 	got := agentDriver("/nonexistent/schedule.json", "any-agent")
-	if got != "claude-code" {
-		t.Errorf("agentDriver with missing file = %q, want claude-code", got)
+	if got != "clawta" {
+		t.Errorf("agentDriver with missing file = %q, want clawta", got)
 	}
 }
 
@@ -127,8 +127,8 @@ func TestAgentDriver_MalformedJSON(t *testing.T) {
 	os.WriteFile(f, []byte("{not valid json"), 0644)
 
 	got := agentDriver(f, "any-agent")
-	if got != "claude-code" {
-		t.Errorf("agentDriver with bad JSON = %q, want claude-code", got)
+	if got != "clawta" {
+		t.Errorf("agentDriver with bad JSON = %q, want clawta", got)
 	}
 }
 

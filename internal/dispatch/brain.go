@@ -102,8 +102,6 @@ type Brain struct {
 	stagger        *StaggerTracker
 	modelRouter    *ModelRouter
 	escalation     *EscalationManager
-	claudeAdapter  *ClaudeCodeAdapter
-	copilotAdapter *CopilotCLIAdapter
 
 	// Config-driven dispatch
 	platformConfig *PlatformConfigHolder
@@ -162,12 +160,6 @@ func (b *Brain) SetModelRouter(mr *ModelRouter) { b.modelRouter = mr }
 
 // SetEscalationManager wires the escalation manager into the brain.
 func (b *Brain) SetEscalationManager(em *EscalationManager) { b.escalation = em }
-
-// SetClaudeCodeAdapter wires the Claude Code CLI adapter into the brain.
-func (b *Brain) SetClaudeCodeAdapter(a *ClaudeCodeAdapter) { b.claudeAdapter = a }
-
-// SetCopilotCLIAdapter wires the Copilot CLI adapter into the brain.
-func (b *Brain) SetCopilotCLIAdapter(a *CopilotCLIAdapter) { b.copilotAdapter = a }
 
 // SetPlatformConfig wires the platform config holder into the brain.
 func (b *Brain) SetPlatformConfig(pc *PlatformConfigHolder) { b.platformConfig = pc }

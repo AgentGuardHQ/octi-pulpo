@@ -298,11 +298,11 @@ func isCreditExhaustion(output string) bool {
 }
 
 // agentDriver looks up the driver for an agent in schedule.json.
-// Falls back to "claude-code" when the file is missing or the agent is not listed.
+// Falls back to "clawta" (T1 local) when the file is missing or the agent is not listed.
 func agentDriver(scheduleFile, agentName string) string {
 	data, err := os.ReadFile(scheduleFile)
 	if err != nil {
-		return "claude-code"
+		return "clawta"
 	}
 	var sched struct {
 		Agents map[string]struct {
@@ -310,12 +310,12 @@ func agentDriver(scheduleFile, agentName string) string {
 		} `json:"agents"`
 	}
 	if err := json.Unmarshal(data, &sched); err != nil {
-		return "claude-code"
+		return "clawta"
 	}
 	if a, ok := sched.Agents[agentName]; ok && a.Driver != "" {
 		return a.Driver
 	}
-	return "claude-code"
+	return "clawta"
 }
 
 func sleep(ctx context.Context, d time.Duration) {

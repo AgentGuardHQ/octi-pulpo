@@ -250,8 +250,6 @@ func main() {
 			brain.SetNotifier(dispatch.NewNtfyNotifier(ntfyBase, ntfyTopic))
 			// Wire swarm CLI adapters
 			modelRouter := dispatch.NewModelRouter()
-			claudeCodeAdapter := dispatch.NewClaudeCodeAdapter("", filepath.Join(home, "workspace"))
-			copilotCLIAdapter := dispatch.NewCopilotCLIAdapter("", filepath.Join(home, "workspace"))
 			staggerTracker := dispatch.NewStaggerTracker(rdb, namespace)
 
 			// Load platform config for config-driven dispatch.
@@ -282,8 +280,6 @@ func main() {
 			escalationMgr := dispatch.NewEscalationManager(modelRouter)
 			queueMachine := dispatch.NewQueueMachine()
 			brain.SetModelRouter(modelRouter)
-			brain.SetClaudeCodeAdapter(claudeCodeAdapter)
-			brain.SetCopilotCLIAdapter(copilotCLIAdapter)
 			brain.SetStagger(staggerTracker)
 			brain.SetEscalationManager(escalationMgr)
 			brain.SetQueueMachine(queueMachine)
