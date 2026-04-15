@@ -48,11 +48,12 @@ type ghDispatchPayload struct {
 }
 
 type ghClientPayload struct {
-	TaskID   string   `json:"task_id"`
-	Type     string   `json:"type"`
-	Prompt   string   `json:"prompt"`
-	Toolset  []string `json:"toolset"`
-	Priority string   `json:"priority"`
+	TaskID     string   `json:"task_id"`
+	DispatchID string   `json:"dispatch_id,omitempty"` // octi#257 correlation id
+	Type       string   `json:"type"`
+	Prompt     string   `json:"prompt"`
+	Toolset    []string `json:"toolset"`
+	Priority   string   `json:"priority"`
 }
 
 // Dispatch POSTs a repository_dispatch event to GitHub. On 204 the task is
@@ -65,11 +66,12 @@ func (g *GHActionsAdapter) Dispatch(ctx context.Context, task *Task) (retResult 
 	payload := ghDispatchPayload{
 		EventType: "octi-pulpo-dispatch",
 		ClientPayload: ghClientPayload{
-			TaskID:   task.ID,
-			Type:     task.Type,
-			Prompt:   task.Prompt,
-			Toolset:  task.Toolset,
-			Priority: task.Priority,
+			TaskID:     task.ID,
+			DispatchID: task.DispatchID,
+			Type:       task.Type,
+			Prompt:     task.Prompt,
+			Toolset:    task.Toolset,
+			Priority:   task.Priority,
 		},
 	}
 
