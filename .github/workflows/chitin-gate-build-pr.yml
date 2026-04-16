@@ -11,4 +11,4 @@ jobs:
   validate:
     uses: chitinhq/chitin/.github/workflows/chitin-gate.yml@main
     with:
-      stage: validate
+      stage: build
