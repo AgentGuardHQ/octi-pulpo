@@ -1521,14 +1521,18 @@ func toolDefs() []ToolDef {
 		},
 		{
 			Name:        "circuit_reset",
-			Description: "Manually reset a driver circuit breaker from OPEN to CLOSED. Use when you know a driver has recovered (e.g. budget refilled, rate-limit lifted, transient error resolved). Requires the driver to have an existing health file.",
+			Description: "Manually reset a circuit breaker. scope='driver' (default) resets a per-driver health circuit from OPEN to CLOSED and requires 'driver'. scope='swarm' clears the swarm-wide pause set by sentinel patrol events (no driver required).",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"driver": map[string]string{"type": "string", "description": "Driver name to reset (e.g. 'openclaw', 'clawta', 'gh-actions', 'claude-api'). Must match an existing health file."},
+					"scope":  map[string]interface{}{"type": "string", "enum": []string{"driver", "swarm"}, "description": "Which circuit to reset. 'driver' (default) resets a per-driver health circuit; 'swarm' clears the fleet-wide pause."},
+					"driver": map[string]string{"type": "string", "description": "Driver name to reset (required when scope='driver'). Must match an existing health file (e.g. 'openclaw', 'clawta', 'gh-actions', 'claude-api')."},
 					"note":   map[string]string{"type": "string", "description": "Optional reason for the manual reset (logged in the response for audit purposes)."},
 				},
-				"required": []string{"driver"},
+				"oneOf": []interface{}{
+					map[string]interface{}{"properties": map[string]interface{}{"scope": map[string]interface{}{"const": "swarm"}}, "required": []string{"scope"}},
+					map[string]interface{}{"required": []string{"driver"}},
+				},
 			},
 		},
 		{

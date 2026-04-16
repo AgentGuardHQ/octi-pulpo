@@ -234,19 +234,21 @@ func (s *Subscriber) applyTrip(signal string, fields map[string]interface{}, ts 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prev := s.state.Load().(*State)
+	if ts == "" {
+		ts = time.Now().UTC().Format(time.RFC3339)
+	}
 	if prev.Paused && prev.Signal == signal {
 		// Already paused on this signal — refresh last-event timestamp
-		// but don't re-log.
-		prev.LastEvent = "circuit." + signal
-		prev.LastEventAt = ts
+		// but don't re-log. Copy to avoid mutating the live snapshot.
+		next := *prev
+		next.LastEvent = "circuit." + signal
+		next.LastEventAt = ts
+		s.state.Store(&next)
 		return
 	}
 	reason := signal
 	if t, ok := fields["threshold"].(string); ok && t != "" {
 		reason = signal + ": " + t
-	}
-	if ts == "" {
-		ts = time.Now().UTC().Format(time.RFC3339)
 	}
 	next := &State{
 		Paused:      true,
