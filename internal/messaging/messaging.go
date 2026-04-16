@@ -26,6 +26,9 @@ var validTypes = map[string]bool{
 }
 
 // Broker manages peer-to-peer messaging between worker contracts via Redis pub/sub.
+//
+// The broadcast-channel surface was removed in octi#271 when the org
+// collapsed to single-tenant. Only directed messaging and reply-wait remain.
 type Broker struct {
 	rdb       *redis.Client
 	namespace string
@@ -84,61 +87,6 @@ func (b *Broker) SendDirected(ctx context.Context, msg PeerMessage) error {
 	return nil
 }
 
-// RequestBroadcast sends a broadcast request for brain approval.
-// Channel: {ns}:broadcast_request:{squad}
-// Does NOT deliver to workers directly.
-func (b *Broker) RequestBroadcast(ctx context.Context, msg PeerMessage, squad string) error {
-	if !validTypes[msg.Type] {
-		return fmt.Errorf("messaging: invalid type %q: must be info, dependency, or warning", msg.Type)
-	}
-
-	if len(msg.Content) > 500 {
-		msg.Content = msg.Content[:500]
-	}
-
-	if msg.Timestamp.IsZero() {
-		msg.Timestamp = time.Now().UTC()
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("messaging: marshal: %w", err)
-	}
-
-	channel := fmt.Sprintf("%s:broadcast_request:%s", b.namespace, squad)
-	if err := b.rdb.Publish(ctx, channel, string(data)).Err(); err != nil {
-		return fmt.Errorf("messaging: publish broadcast request to %s: %w", channel, err)
-	}
-	return nil
-}
-
-// ApproveBroadcast forwards an approved broadcast to the squad channel.
-// Channel: {ns}:broadcast:{squad}
-func (b *Broker) ApproveBroadcast(ctx context.Context, msg PeerMessage, squad string) error {
-	if !validTypes[msg.Type] {
-		return fmt.Errorf("messaging: invalid type %q: must be info, dependency, or warning", msg.Type)
-	}
-
-	if len(msg.Content) > 500 {
-		msg.Content = msg.Content[:500]
-	}
-
-	if msg.Timestamp.IsZero() {
-		msg.Timestamp = time.Now().UTC()
-	}
-
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("messaging: marshal: %w", err)
-	}
-
-	channel := fmt.Sprintf("%s:broadcast:%s", b.namespace, squad)
-	if err := b.rdb.Publish(ctx, channel, string(data)).Err(); err != nil {
-		return fmt.Errorf("messaging: publish broadcast to %s: %w", channel, err)
-	}
-	return nil
-}
-
 // SendAndWait sends a directed message and blocks until a reply arrives on
 // the reply channel, or timeout expires. Returns the reply content or error.
 // Reply channel: {ns}:reply:{msg.FromContract}:{msg.ToContract}
@@ -186,18 +134,17 @@ func (b *Broker) SendReply(ctx context.Context, originalFrom, originalTo, conten
 	return nil
 }
 
-// Subscribe returns a channel that receives messages for a given contract.
-// Subscribes to both directed ({ns}:msg:{contractID}) and broadcast ({ns}:broadcast:{squad}) channels.
-func (b *Broker) Subscribe(ctx context.Context, contractID string, squad string) (<-chan PeerMessage, error) {
+// Subscribe returns a channel that receives directed messages for a given contract.
+// Subscribes to {ns}:msg:{contractID}.
+func (b *Broker) Subscribe(ctx context.Context, contractID string) (<-chan PeerMessage, error) {
 	directedCh := fmt.Sprintf("%s:msg:%s", b.namespace, contractID)
-	broadcastCh := fmt.Sprintf("%s:broadcast:%s", b.namespace, squad)
 
-	pubsub := b.rdb.Subscribe(ctx, directedCh, broadcastCh)
+	pubsub := b.rdb.Subscribe(ctx, directedCh)
 
 	// Wait for subscription confirmation
 	if _, err := pubsub.Receive(ctx); err != nil {
 		pubsub.Close()
-		return nil, fmt.Errorf("messaging: subscribe %s/%s: %w", directedCh, broadcastCh, err)
+		return nil, fmt.Errorf("messaging: subscribe %s: %w", directedCh, err)
 	}
 
 	out := make(chan PeerMessage, 64)

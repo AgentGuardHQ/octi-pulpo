@@ -5,7 +5,7 @@
 // Three primitives:
 //
 //  1. Intake scoring — Assess a task and return ACCEPT/DEFER/REJECT/PREFLIGHT.
-//  2. Concurrency gates — Enforce max-N active agents per scope (repo/squad/global).
+//  2. Concurrency gates — Enforce max-N active agents per scope (repo/global).
 //  3. Domain locks — Exclusive locks on file paths, branches, or services.
 package admission
 
@@ -33,8 +33,6 @@ const (
 type TaskSpec struct {
 	// Title is a short description of the task.
 	Title string `json:"title"`
-	// Squad is the owning squad (e.g. "kernel", "octi-pulpo").
-	Squad string `json:"squad"`
 	// Repo is the target repository (e.g. "chitinhq/kernel").
 	Repo string `json:"repo"`
 	// FilePaths lists files this task will touch (used for blast-radius scoring).
@@ -186,9 +184,9 @@ return 1
 
 // ConcurrencyScope identifies a scoped concurrency limit.
 type ConcurrencyScope struct {
-	// Type is "repo", "squad", or "global".
+	// Type is "repo" or "global".
 	Type string `json:"type"`
-	// Key is the scope identifier (repo name, squad name, or "global").
+	// Key is the scope identifier (repo name or "global").
 	Key string `json:"key"`
 	// Limit is the maximum number of concurrent agents for this scope.
 	Limit int `json:"limit"`

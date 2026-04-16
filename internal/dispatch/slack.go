@@ -150,29 +150,12 @@ func (n *Notifier) PostBudgetDashboard(ctx context.Context, drivers []routing.Dr
 	return n.post(ctx, map[string]interface{}{"text": sb.String()})
 }
 
-// PostDailyStandup sends a daily standup summary to Slack.
-func (n *Notifier) PostDailyStandup(ctx context.Context, entries interface{}) error {
-	if !n.Enabled() {
-		return nil
-	}
-	return n.post(ctx, map[string]interface{}{"text": "*Daily Standup*\nStandup entries posted."})
-}
-
 // PostStuckAgentAlert sends a Slack alert for a stuck agent.
 func (n *Notifier) PostStuckAgentAlert(ctx context.Context, agent string, consecutiveFails int) error {
 	if !n.Enabled() {
 		return nil
 	}
 	text := fmt.Sprintf("*Stuck Agent:* %s — %d consecutive failures, triage flag set.", agent, consecutiveFails)
-	return n.post(ctx, map[string]interface{}{"text": text})
-}
-
-// PostInactiveSquadAlert sends a Slack alert for an inactive squad.
-func (n *Notifier) PostInactiveSquadAlert(ctx context.Context, squad string, idleHours int) error {
-	if !n.Enabled() {
-		return nil
-	}
-	text := fmt.Sprintf("*Inactive Squad:* %s — no activity for %d hours.", squad, idleHours)
 	return n.post(ctx, map[string]interface{}{"text": text})
 }
 
@@ -215,7 +198,7 @@ func (n *Notifier) PostDriverAlert(ctx context.Context, driverName string, failu
 		map[string]interface{}{
 			"type": "actions",
 			"elements": []interface{}{
-				slackButton("pause_squad", driverName, "Pause Squad", ""),
+				slackButton("pause_driver", driverName, "Pause Driver", ""),
 				slackButton("switch_tier", driverName, "Switch Tier", ""),
 				slackButton("ignore_alert", driverName, "Ignore", ""),
 			},
@@ -244,18 +227,19 @@ func (n *Notifier) PostPRReadyAlert(ctx context.Context, repo string, prNumber i
 	return n.post(ctx, map[string]interface{}{"blocks": blocks})
 }
 
-// PostSprintGoalAlert sends a Block Kit message when a sprint goal is set.
-func (n *Notifier) PostSprintGoalAlert(ctx context.Context, squad, goal string) error {
+// PostSprintGoalAlert sends a Block Kit message when a sprint goal is set
+// for a repo.
+func (n *Notifier) PostSprintGoalAlert(ctx context.Context, repo, goal string) error {
 	if !n.Enabled() {
 		return nil
 	}
 	blocks := []interface{}{
-		slackSection(fmt.Sprintf("*Sprint Goal: %s*\n_%s_", squad, goal)),
+		slackSection(fmt.Sprintf("*Sprint Goal: %s*\n_%s_", repo, goal)),
 		map[string]interface{}{
 			"type": "actions",
 			"elements": []interface{}{
-				slackButton("accept_goal", squad, "Accept", "primary"),
-				slackButton("request_changes", squad, "Request Changes", ""),
+				slackButton("accept_goal", repo, "Accept", "primary"),
+				slackButton("reject_goal", repo, "Request Changes", ""),
 			},
 		},
 	}
