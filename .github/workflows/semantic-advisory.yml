@@ -15,3 +15,5 @@ permissions:
 jobs:
   advisory:
     uses: chitinhq/chitin/.github/workflows/semantic-advisory.yml@main
+    # Advisory-only: never block merge even if the reusable workflow errors.
+    continue-on-error: true
