@@ -42,7 +42,6 @@ type agentConfig struct {
 	Cron    string `json:"cron"`
 	Repo    string `json:"repo"`
 	Box     string `json:"box"`
-	Squad   string `json:"squad"`
 	Enabled bool   `json:"enabled"`
 	Timeout int    `json:"timeout"`
 	Model   string `json:"model"`

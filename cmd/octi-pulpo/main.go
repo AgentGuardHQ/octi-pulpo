@@ -19,10 +19,8 @@ import (
 	"github.com/chitinhq/octi-pulpo/internal/learner"
 	"github.com/chitinhq/octi-pulpo/internal/mcp"
 	"github.com/chitinhq/octi-pulpo/internal/memory"
-	"github.com/chitinhq/octi-pulpo/internal/org"
 	"github.com/chitinhq/octi-pulpo/internal/routing"
 	"github.com/chitinhq/octi-pulpo/internal/sprint"
-	"github.com/chitinhq/octi-pulpo/internal/standup"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -146,9 +144,6 @@ func main() {
 	// Set up benchmark tracker
 	benchmark := dispatch.NewBenchmarkTracker(rdb, namespace)
 
-	// Set up org store
-	orgStore := org.NewOrgStore(rdb, namespace)
-
 	// Set up budget store
 	budgetStore := budget.NewBudgetStore(rdb, namespace)
 	dispatcher.SetBudget(budgetStore)
@@ -156,15 +151,10 @@ func main() {
 	// Set up goal store
 	goalStore := sprint.NewGoalStore(rdb, namespace)
 
-	// Set up standup store
-	standupStore := standup.New(rdb, namespace)
-
 	server := mcp.New(mem, coord, router)
 	server.SetDispatcher(dispatcher)
 	server.SetSprintStore(sprintStore)
-	server.SetStandupStore(standupStore)
 	server.SetBenchmark(benchmark)
-	server.SetOrgStore(orgStore)
 	server.SetBudgetStore(budgetStore)
 	server.SetGoalStore(goalStore)
 	server.SetProfileStore(profiles)
@@ -288,7 +278,6 @@ func main() {
 			brain := dispatch.NewBrain(dispatcher, chains)
 			brain.SetSprintStore(sprintStore)
 			brain.SetProfileStore(profiles)
-			brain.SetStandupStore(standupStore)
 			// Wire task adapters: Clawta → GH Actions (Copilot) → Copilot SDK → OpenClaw (Matrix)
 			clawtaBinary := filepath.Join(home, "workspace", "clawta", "bench", "clawta-linux-amd64")
 			clawtaAdapter := dispatch.NewClawtaAdapter(clawtaBinary, "", "", "")

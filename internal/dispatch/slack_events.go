@@ -212,10 +212,6 @@ func (h *SlackEventHandler) parseCommand(text string) (cmd, args string) {
 		return "dispatch", strings.TrimSpace(strings.TrimPrefix(text, "dispatch "))
 	case strings.HasPrefix(text, "trigger "):
 		return "dispatch", strings.TrimSpace(strings.TrimPrefix(text, "trigger "))
-	case strings.HasPrefix(text, "pause "):
-		return "pause", strings.TrimSpace(strings.TrimPrefix(text, "pause "))
-	case strings.HasPrefix(text, "resume "):
-		return "resume", strings.TrimSpace(strings.TrimPrefix(text, "resume "))
 	case strings.HasPrefix(text, "budget override "):
 		return "budget_override", strings.TrimSpace(strings.TrimPrefix(text, "budget override "))
 	}
@@ -232,10 +228,6 @@ func (h *SlackEventHandler) handleCommand(ctx context.Context, cmd, args, channe
 		blocks = h.buildConstraintBlocks(ctx)
 	case "dispatch":
 		blocks = h.buildDispatchBlocks(ctx, args)
-	case "pause":
-		blocks = h.buildPauseBlocks(ctx, args)
-	case "resume":
-		blocks = h.buildResumeBlocks(ctx, args)
 	case "budget_override":
 		blocks = h.buildBudgetOverrideBlocks(ctx, args)
 	case "help":
@@ -374,41 +366,6 @@ func (h *SlackEventHandler) buildDispatchBlocks(ctx context.Context, args string
 	}
 }
 
-// buildPauseBlocks broadcasts a pause directive for the given squad.
-func (h *SlackEventHandler) buildPauseBlocks(ctx context.Context, squad string) []interface{} {
-	squad = strings.TrimSuffix(strings.TrimSpace(squad), " squad")
-	if squad == "" {
-		return slackTextBlocks(":x: Usage: `pause <squad>`")
-	}
-	if err := h.dispatcher.Coord().Broadcast(ctx, "slack-bot", "directive", "pause-squad:"+squad); err != nil {
-		return slackTextBlocks(fmt.Sprintf(":x: Could not pause %s squad: %s", squad, err))
-	}
-	return []interface{}{
-		slackSection(fmt.Sprintf(
-			":pause_button: *%s squad paused.* Directive broadcast — agents drain on next tick.", squad,
-		)),
-		map[string]interface{}{
-			"type": "actions",
-			"elements": []interface{}{
-				slackButton("resume_squad_"+squad, "resume_squad_"+squad, "Resume", "primary"),
-				slackButton("view_status", "view_status", "View Status", ""),
-			},
-		},
-	}
-}
-
-// buildResumeBlocks broadcasts a resume directive for the given squad.
-func (h *SlackEventHandler) buildResumeBlocks(ctx context.Context, squad string) []interface{} {
-	squad = strings.TrimSuffix(strings.TrimSpace(squad), " squad")
-	if squad == "" {
-		return slackTextBlocks(":x: Usage: `resume <squad>`")
-	}
-	if err := h.dispatcher.Coord().Broadcast(ctx, "slack-bot", "directive", "resume-squad:"+squad); err != nil {
-		return slackTextBlocks(fmt.Sprintf(":x: Could not resume %s squad: %s", squad, err))
-	}
-	return slackTextBlocks(fmt.Sprintf(":arrow_forward: *%s squad resumed.* Directive broadcast.", squad))
-}
-
 // buildBudgetOverrideBlocks unpauses a budget-exhausted agent and returns a
 // Block Kit confirmation. The agent name comes from args.
 func (h *SlackEventHandler) buildBudgetOverrideBlocks(ctx context.Context, agent string) []interface{} {
@@ -438,8 +395,6 @@ func (h *SlackEventHandler) buildHelpBlocks() []interface{} {
 		"`constraint` — identify the #1 system bottleneck\n" +
 		"`dispatch <agent>` — trigger an agent run immediately\n" +
 		"`dispatch <agent> at #<issue>` — trigger with issue context\n" +
-		"`pause <squad>` — broadcast pause directive to squad agents\n" +
-		"`resume <squad>` — broadcast resume directive to squad agents\n" +
 		"`budget override <agent>` — unpause a budget-exhausted agent\n" +
 		"`help` — show this message\n\n" +
 		"_Any other message is treated as a brief and creates an intake issue._"

@@ -20,27 +20,14 @@ type CompletionAction struct {
 // ChainConfig maps agent names to their completion actions.
 type ChainConfig map[string]CompletionAction
 
-// DefaultChains returns the standard completion chain configuration
-// encoding the natural agent workflow:
+// DefaultChains returns the standard completion chain configuration.
 //
-//	SR finishes coding -> QA reviews
-//	QA passes -> PR review
-//	PR review done -> merger
-//
-// Squad-era fan-outs (jared-conductor, director, *-em) were excised in
-// octi#271 Phase 1 when the org collapsed to per-repo routing. Fossil
-// regrowth is prevented by TestNoFossilAgentsInChains in
-// fossil_regression_test.go, keyed to LiveRepos.
+// The full per-repo senior/manager/QA fan-out (jared-conductor, director,
+// *-em, *-sr, *-qa) was excised in octi#271 Phase 2+3. Only reviewer →
+// merger plumbing remains — PR-review agents are live webhook handlers.
+// Regression coverage: TestNoFossilAgentsInChains in fossil_regression_test.go.
 func DefaultChains() ChainConfig {
 	return ChainConfig{
-		// SR finishes coding -> QA reviews, triage on failure
-		"kernel-sr":     {OnCommit: []string{"kernel-qa"}, OnFailure: []string{"triage-failing-ci-agent"}},
-		"shellforge-sr": {OnCommit: []string{"shellforge-qa"}},
-
-		// QA passes -> PR review
-		"kernel-qa":     {OnSuccess: []string{"workspace-pr-review-agent"}},
-		"shellforge-qa": {OnSuccess: []string{"shellforge-reviewer"}},
-
 		// PR review done -> merger
 		"workspace-pr-review-agent": {OnSuccess: []string{"pr-merger-agent"}},
 

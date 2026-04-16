@@ -17,10 +17,8 @@ import (
 	"github.com/chitinhq/octi-pulpo/internal/dispatch"
 	"github.com/chitinhq/octi-pulpo/internal/mcptrace"
 	"github.com/chitinhq/octi-pulpo/internal/memory"
-	"github.com/chitinhq/octi-pulpo/internal/org"
 	"github.com/chitinhq/octi-pulpo/internal/routing"
 	"github.com/chitinhq/octi-pulpo/internal/sprint"
-	"github.com/chitinhq/octi-pulpo/internal/standup"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -54,18 +52,21 @@ type RPCError struct {
 }
 
 // Server is the Octi Pulpo MCP server.
+//
+// The squad-era standup, org-chart, and cross-squad request surfaces were
+// deleted in octi#271 Phase 2+3 when dispatch collapsed to adapter-based
+// routing. Memory is flat (no per-scope namespacing), sprint items key off
+// repo alone, and coordination requests no longer exist.
 type Server struct {
-	mem          *memory.Store
-	coord        *coordination.Engine
-	router       *routing.Router
-	dispatcher   *dispatch.Dispatcher
-	sprintStore  *sprint.Store
-	standupStore *standup.Store
-	benchmark    *dispatch.BenchmarkTracker
-	profiles     *dispatch.ProfileStore
-	orgStore     *org.OrgStore
-	budgetStore   *budget.BudgetStore
-	goalStore     *sprint.GoalStore
+	mem              *memory.Store
+	coord            *coordination.Engine
+	router           *routing.Router
+	dispatcher       *dispatch.Dispatcher
+	sprintStore      *sprint.Store
+	benchmark        *dispatch.BenchmarkTracker
+	profiles         *dispatch.ProfileStore
+	budgetStore      *budget.BudgetStore
+	goalStore        *sprint.GoalStore
 	admissionGate    *admission.Gate
 	anthropicAdapter *dispatch.AnthropicAdapter
 	ghActionsAdapter *dispatch.GHActionsAdapter
@@ -100,25 +101,15 @@ func (s *Server) SetBenchmark(bt *dispatch.BenchmarkTracker) {
 	s.benchmark = bt
 }
 
-// SetStandupStore enables the standup MCP tools.
-func (s *Server) SetStandupStore(ss *standup.Store) {
-	s.standupStore = ss
-}
-
 // SetProfileStore enables the agent leaderboard MCP tool.
 func (s *Server) SetProfileStore(ps *dispatch.ProfileStore) {
 	s.profiles = ps
 }
 
 // SetRedis enables Redis-backed budget enrichment for the health_report tool.
-// Budget percentages are written by octi-worker after each agent run.
 func (s *Server) SetRedis(rdb *redis.Client, ns string) {
 	s.rdb = rdb
 	s.redisNS = ns
-}
-
-func (s *Server) SetOrgStore(o *org.OrgStore) {
-	s.orgStore = o
 }
 
 func (s *Server) SetBudgetStore(b *budget.BudgetStore) {
@@ -129,17 +120,16 @@ func (s *Server) SetGoalStore(g *sprint.GoalStore) {
 	s.goalStore = g
 }
 
-// SetAdmissionGate enables admission control MCP tools (admit_task, lock/unlock_domain, list_domain_locks).
+// SetAdmissionGate enables admission control MCP tools.
 func (s *Server) SetAdmissionGate(g *admission.Gate) {
 	s.admissionGate = g
 }
 
 func (s *Server) SetAnthropicAdapter(a *dispatch.AnthropicAdapter) { s.anthropicAdapter = a }
 func (s *Server) SetGHActionsAdapter(a *dispatch.GHActionsAdapter) { s.ghActionsAdapter = a }
-func (s *Server) SetCopilotAdapter(a *dispatch.CopilotAdapter) { s.copilotAdapter = a }
+func (s *Server) SetCopilotAdapter(a *dispatch.CopilotAdapter)     { s.copilotAdapter = a }
 
 // SetPromptCLIAdapter enables the dispatch_prompt_to_cli MCP tool.
-// If never called, the handler lazily constructs a default adapter.
 func (s *Server) SetPromptCLIAdapter(a *dispatch.PromptCLIAdapter) { s.promptCLIAdapter = a }
 
 // Serve runs the MCP server on stdio (stdin/stdout JSON-RPC).
@@ -156,7 +146,6 @@ func (s *Server) Serve() error {
 			return fmt.Errorf("decode request: %w", err)
 		}
 
-		// JSON-RPC 2.0: notifications (no id) must not receive a response.
 		if req.ID == nil {
 			continue
 		}
@@ -199,8 +188,6 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 		agentID = "unknown"
 	}
 
-	// Emit a telemetry event after the tool handler returns. Best-effort —
-	// never blocks the response path. Outcome is inferred from resp.Error.
 	start := time.Now()
 	defer func() {
 		outcome, reason := "allow", ""
@@ -214,49 +201,27 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 	switch params.Name {
 	case "memory_store":
 		var args struct {
-			Content        string   `json:"content"`
-			Topics         []string `json:"topics"`
-			SquadNamespace string   `json:"squadNamespace"`
+			Content string   `json:"content"`
+			Topics  []string `json:"topics"`
 		}
 		json.Unmarshal(params.Arguments, &args)
-		store := s.mem
-		if args.SquadNamespace != "" {
-			if err := s.mem.RegisterSquad(ctx, args.SquadNamespace); err != nil {
-				fmt.Fprintf(os.Stderr, "register squad: %v\n", err)
-			}
-			store = s.mem.WithSquad(args.SquadNamespace)
-		}
-		id, err := store.Put(ctx, agentID, args.Content, args.Topics)
+		id, err := s.mem.Put(ctx, agentID, args.Content, args.Topics)
 		if err != nil {
 			return errorResp(req.ID, -32000, err.Error())
 		}
 		msg := fmt.Sprintf("Stored memory %s (topics: %s)", id, strings.Join(args.Topics, ", "))
-		if args.SquadNamespace != "" {
-			msg += fmt.Sprintf(" [squad: %s]", args.SquadNamespace)
-		}
 		return textResult(req.ID, msg)
 
 	case "memory_recall":
 		var args struct {
-			Query          string `json:"query"`
-			Limit          int    `json:"limit"`
-			SquadNamespace string `json:"squadNamespace"`
-			CrossSquad     bool   `json:"crossSquad"`
+			Query string `json:"query"`
+			Limit int    `json:"limit"`
 		}
 		json.Unmarshal(params.Arguments, &args)
 		if args.Limit == 0 {
 			args.Limit = 5
 		}
-		var results []memory.Entry
-		var err error
-		switch {
-		case args.CrossSquad:
-			results, err = s.mem.RecallCrossSquad(ctx, args.Query, args.Limit)
-		case args.SquadNamespace != "":
-			results, err = s.mem.WithSquad(args.SquadNamespace).Recall(ctx, args.Query, args.Limit)
-		default:
-			results, err = s.mem.Recall(ctx, args.Query, args.Limit)
-		}
+		results, err := s.mem.Recall(ctx, args.Query, args.Limit)
 		if err != nil {
 			return errorResp(req.ID, -32000, err.Error())
 		}
@@ -353,9 +318,9 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 		var args struct {
 			EventType string            `json:"eventType"`
 			Source    string            `json:"source"`
-			Repo     string            `json:"repo"`
-			Payload  map[string]string `json:"payload"`
-			Priority int               `json:"priority"`
+			Repo      string            `json:"repo"`
+			Payload   map[string]string `json:"payload"`
+			Priority  int               `json:"priority"`
 		}
 		json.Unmarshal(params.Arguments, &args)
 		if args.EventType == "" {
@@ -388,19 +353,11 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 			"pending_agents":    agents,
 			"recent_dispatches": recent,
 		}
-		// Surface swarm-circuit pause state so /go can see at a glance
-		// whether sentinel's patrol has frozen the dispatcher (retry_storm
-		// / resource_burn / repo_health / telemetry_integrity). Always
-		// present so consumers can rely on the key.
 		if sc := s.dispatcher.SwarmCircuit(); sc != nil {
 			status["swarm_circuit"] = sc.Snapshot()
 		} else {
 			status["swarm_circuit"] = map[string]interface{}{"paused": false}
 		}
-		// Augment with chitin session state so callers see the active
-		// session id (for rating) and recent session history alongside
-		// dispatch info. Best-effort: if chitin isn't installed or the
-		// command fails, skip silently rather than break the response.
 		if sessionsInfo := loadChitinSessionSnapshot(ctx); sessionsInfo != nil {
 			status["chitin_sessions"] = sessionsInfo
 		}
@@ -423,7 +380,7 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 		var args struct {
 			Agent    string `json:"agent"`
 			Priority int    `json:"priority"`
-			Budget   string `json:"budget"` // optional: "low", "medium", "high"; empty = dynamic
+			Budget   string `json:"budget"`
 		}
 		json.Unmarshal(params.Arguments, &args)
 		if args.Agent == "" {
@@ -455,10 +412,10 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 		if err != nil {
 			return errorResp(req.ID, -32000, err.Error())
 		}
-		// Group by squad
+		// Group by repo (replaces previous squad grouping — octi#271).
 		grouped := make(map[string][]sprint.SprintItem)
 		for _, item := range items {
-			grouped[item.Squad] = append(grouped[item.Squad], item)
+			grouped[item.Repo] = append(grouped[item.Repo], item)
 		}
 		data, _ := json.Marshal(grouped)
 		return textResult(req.ID, string(data))
@@ -482,16 +439,15 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 			return errorResp(req.ID, -32000, "sprint store not initialized")
 		}
 		var args struct {
-			Repo                string `json:"repo"`
-			IssueNum            int    `json:"issue_num"`
-			Title               string `json:"title"`
-			Priority            int    `json:"priority"`
-			DependsOn           []int  `json:"depends_on"`
-			AssignTo            string `json:"assign_to"`
-			Squad               string `json:"squad"`
-			CreateGitHubIssue   bool   `json:"create_github_issue"`
-			Body                string `json:"body"`
-			Labels              string `json:"labels"`
+			Repo              string `json:"repo"`
+			IssueNum          int    `json:"issue_num"`
+			Title             string `json:"title"`
+			Priority          int    `json:"priority"`
+			DependsOn         []int  `json:"depends_on"`
+			AssignTo          string `json:"assign_to"`
+			CreateGitHubIssue bool   `json:"create_github_issue"`
+			Body              string `json:"body"`
+			Labels            string `json:"labels"`
 		}
 		json.Unmarshal(params.Arguments, &args)
 		if args.CreateGitHubIssue && args.Repo != "" && args.IssueNum == 0 {
@@ -508,7 +464,6 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 			Priority:  args.Priority,
 			DependsOn: args.DependsOn,
 			AssignTo:  args.AssignTo,
-			Squad:     args.Squad,
 		}
 		if err := s.sprintStore.Create(ctx, item); err != nil {
 			return errorResp(req.ID, -32000, err.Error())
@@ -529,7 +484,6 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 			return errorResp(req.ID, -32602, "issue_num is required")
 		}
 		if args.Repo == "" {
-			// Search all default repos
 			found := false
 			for _, repo := range sprint.DefaultRepos {
 				if err := s.sprintStore.Reprioritize(ctx, repo, args.IssueNum, args.Priority); err == nil {
@@ -558,21 +512,16 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 			return errorResp(req.ID, -32000, "sprint store not initialized")
 		}
 		var args struct {
-			Repo       string `json:"repo"`
-			IssueNum   int    `json:"issue_num"`
-			Summary    string `json:"summary"`
-			SkipGates  bool   `json:"skip_gates"`
+			Repo      string `json:"repo"`
+			IssueNum  int    `json:"issue_num"`
+			Summary   string `json:"summary"`
+			SkipGates bool   `json:"skip_gates"`
 		}
 		json.Unmarshal(params.Arguments, &args)
 		if args.IssueNum == 0 {
 			return errorResp(req.ID, -32602, "issue_num is required")
 		}
-		// Fetch sprint items once and reuse for all repo lookups (avoids repeated
-		// Redis O(n) scans across DefaultRepos).
 		allItems, _ := s.sprintStore.GetAll(ctx)
-		// Resolve sprint item for a repo. Returns (found, prNumber). prNumber may
-		// legitimately be 0 for an existing item with no linked PR — callers must
-		// branch on `found`, not on prNumber, to decide whether the item exists.
 		resolveItem := func(repo string) (bool, int) {
 			for _, it := range allItems {
 				if it.Repo == repo && it.IssueNum == args.IssueNum {
@@ -581,9 +530,6 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 			}
 			return false, 0
 		}
-		// Run gate chain unless explicitly skipped (migration escape hatch).
-		// Caller is responsible for confirming the item exists before invoking,
-		// so gates always run against a real sprint item (possibly with empty ref).
 		runGates := func(repo string, prNumber int) (Response, bool) {
 			if args.SkipGates {
 				return Response{}, false
@@ -597,8 +543,6 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 		}
 		if args.Repo == "" {
 			for _, repo := range sprint.DefaultRepos {
-				// Only run gates if the item exists in this repo. Use `found` —
-				// not prNumber == 0 — so items without a linked PR still gate.
 				found, prNumber := resolveItem(repo)
 				if !found {
 					continue
@@ -629,9 +573,6 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 			}
 			return errorResp(req.ID, -32000, fmt.Sprintf("issue #%d not found in any sprint repo", args.IssueNum))
 		}
-		// Resolve item before running gates so a missing sprint item surfaces as
-		// "not found" rather than a misleading gate failure (e.g., empty-ref CI
-		// check against cwd).
 		found, prNumber := resolveItem(args.Repo)
 		if !found {
 			return errorResp(req.ID, -32000,
@@ -693,155 +634,14 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 		data, _ := json.Marshal(rep)
 		return textResult(req.ID, string(data))
 
-	case "request_work":
-		var args struct {
-			ToSquad         string `json:"to_squad"`
-			Type            string `json:"type"`
-			Description     string `json:"description"`
-			Priority        int    `json:"priority"`
-			DeadlineMinutes int    `json:"deadline_minutes"`
-		}
-		json.Unmarshal(params.Arguments, &args)
-		if args.ToSquad == "" || args.Description == "" {
-			return errorResp(req.ID, -32602, "to_squad and description are required")
-		}
-		crossReq, err := s.coord.SubmitRequest(ctx, agentID, args.ToSquad,
-			coordination.RequestType(args.Type), args.Description,
-			args.Priority, args.DeadlineMinutes)
-		if err != nil {
-			return errorResp(req.ID, -32000, err.Error())
-		}
-		return textResult(req.ID, fmt.Sprintf(
-			"Request %s submitted to squad %s (type: %s, priority: %d)",
-			crossReq.ID, crossReq.ToSquad, crossReq.Type, crossReq.Priority,
-		))
-
-	case "check_requests":
-		var args struct {
-			Squad string `json:"squad"`
-		}
-		json.Unmarshal(params.Arguments, &args)
-		if args.Squad == "" {
-			return errorResp(req.ID, -32602, "squad is required")
-		}
-		pending, err := s.coord.GetPendingRequests(ctx, args.Squad)
-		if err != nil {
-			return errorResp(req.ID, -32000, err.Error())
-		}
-		if len(pending) == 0 {
-			return textResult(req.ID, fmt.Sprintf("No pending requests for squad %s.", args.Squad))
-		}
-		data, _ := json.Marshal(pending)
-		return textResult(req.ID, string(data))
-
-	case "fulfill_request":
-		var args struct {
-			RequestID string `json:"request_id"`
-			Result    string `json:"result"`
-			PRNumber  int    `json:"pr_number"`
-		}
-		json.Unmarshal(params.Arguments, &args)
-		if args.RequestID == "" || args.Result == "" {
-			return errorResp(req.ID, -32602, "request_id and result are required")
-		}
-		if err := s.coord.FulfillRequest(ctx, args.RequestID, agentID, args.Result, args.PRNumber); err != nil {
-			return errorResp(req.ID, -32000, err.Error())
-		}
-		msg := fmt.Sprintf("Request %s fulfilled.", args.RequestID)
-		if args.PRNumber > 0 {
-			msg += fmt.Sprintf(" PR #%d linked.", args.PRNumber)
-		}
-		return textResult(req.ID, msg)
-
-	case "standup_report":
-		if s.standupStore == nil {
-			return errorResp(req.ID, -32000, "standup store not initialized")
-		}
-		var args standup.Entry
-		json.Unmarshal(params.Arguments, &args)
-		if args.Squad == "" {
-			args.Squad = agentID
-		}
-		if err := s.standupStore.Report(ctx, args); err != nil {
-			return errorResp(req.ID, -32000, err.Error())
-		}
-		return textResult(req.ID, fmt.Sprintf("Standup recorded for squad %q on %s", args.Squad, args.Date))
-
-	case "standup_read":
-		if s.standupStore == nil {
-			return errorResp(req.ID, -32000, "standup store not initialized")
-		}
-		var args struct {
-			Squad string `json:"squad"`
-			All   bool   `json:"all"`
-		}
-		json.Unmarshal(params.Arguments, &args)
-		if args.All {
-			entries, err := s.standupStore.Daily(ctx)
-			if err != nil {
-				return errorResp(req.ID, -32000, err.Error())
-			}
-			if len(entries) == 0 {
-				return textResult(req.ID, "No standup entries found for today.")
-			}
-			data, _ := json.Marshal(entries)
-			return textResult(req.ID, string(data))
-		}
-		if args.Squad == "" {
-			return errorResp(req.ID, -32602, "squad is required (or set all=true for all squads)")
-		}
-		entry, err := s.standupStore.Read(ctx, args.Squad)
-		if err != nil {
-			return errorResp(req.ID, -32000, err.Error())
-		}
-		if entry == nil {
-			return textResult(req.ID, fmt.Sprintf("No standup found for squad %q today.", args.Squad))
-		}
-		data, _ := json.Marshal(entry)
-		return textResult(req.ID, string(data))
-
-
-	case "org_chart":
-		if s.orgStore == nil {
-			return errorResp(req.ID, -32000, "org store not initialized")
-		}
-		var args struct {
-			Agent string `json:"agent"`
-		}
-		json.Unmarshal(params.Arguments, &args)
-		if args.Agent != "" {
-			agent, err := s.orgStore.Get(ctx, args.Agent)
-			if err != nil {
-				return errorResp(req.ID, -32000, err.Error())
-			}
-			chain, _ := s.orgStore.ChainOfCommand(ctx, args.Agent)
-			reports, _ := s.orgStore.DirectReports(ctx, args.Agent)
-			result := map[string]interface{}{
-				"agent":          agent,
-				"chain":          chain,
-				"direct_reports": reports,
-			}
-			data, _ := json.Marshal(result)
-			return textResult(req.ID, string(data))
-		}
-		tree, err := org.PrintTree(ctx, s.orgStore)
-		if err != nil {
-			return errorResp(req.ID, -32000, err.Error())
-		}
-		return textResult(req.ID, tree)
-
 	case "circuit_reset":
 		var args struct {
 			Driver string `json:"driver"`
 			Note   string `json:"note"`
-			Scope  string `json:"scope"` // "driver" (default) or "swarm"
+			Scope  string `json:"scope"`
 		}
 		json.Unmarshal(params.Arguments, &args)
 
-		// Scope=swarm clears sentinel's swarm-wide circuit (the patrol-
-		// driven pause flag tailed from events.jsonl) without touching
-		// any per-driver routing health. The Driver field is ignored
-		// when scope=swarm.
 		if args.Scope == "swarm" {
 			if s.dispatcher == nil {
 				return errorResp(req.ID, -32000, "dispatcher not initialized")
@@ -860,7 +660,6 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 		if args.Driver == "" {
 			return errorResp(req.ID, -32602, "driver is required (or set scope=\"swarm\")")
 		}
-		// Capture previous state for the response message.
 		prev := routing.DriverHealth{Name: args.Driver}
 		for _, h := range s.router.HealthReport() {
 			if h.Name == args.Driver {
@@ -949,7 +748,6 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 		}
 		return textResult(req.ID, fmt.Sprintf("Budget reset for %s: spent=0, runs=0, paused=false", args.Agent))
 
-	// ── Admission control ──────────────────────────────────────────────────
 	case "admit_task":
 		if s.admissionGate == nil {
 			return errorResp(req.ID, -32000, "admission gate not initialized")
@@ -985,7 +783,7 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 		}
 		ttl := time.Duration(args.TTLSeconds) * time.Second
 		if ttl <= 0 {
-			ttl = 900 * time.Second // default 15 min
+			ttl = 900 * time.Second
 		}
 		lock, err := s.admissionGate.AcquireLock(ctx, args.Domain, args.Holder, ttl)
 		if err != nil {
@@ -1134,11 +932,11 @@ func (s *Server) handleToolCall(req Request) (resp Response) {
 
 // EnrichedHealthEntry extends DriverHealth with derived observability fields.
 type EnrichedHealthEntry struct {
-	Name               string `json:"name"`
-	CircuitState       string `json:"circuit_state"`
-	Failures           int    `json:"failures"`
-	LastFailure        string `json:"last_failure,omitempty"`
-	LastSuccess        string `json:"last_success,omitempty"`
+	Name                 string `json:"name"`
+	CircuitState         string `json:"circuit_state"`
+	Failures             int    `json:"failures"`
+	LastFailure          string `json:"last_failure,omitempty"`
+	LastSuccess          string `json:"last_success,omitempty"`
 	SecsSinceSuccess     int64  `json:"secs_since_last_success,omitempty"`
 	DaysSinceLastSuccess int    `json:"days_since_last_success"`
 	Stale                bool   `json:"stale"`
@@ -1164,9 +962,6 @@ func enrichHealthReport(drivers []routing.DriverHealth) []EnrichedHealthEntry {
 			}
 		}
 		e.DaysSinceLastSuccess = d.DaysSinceLastSuccess
-		// Stale = >=2d since last success, OR no recorded success at all.
-		// Stale drivers are unhealthy regardless of circuit state — a CLOSED
-		// circuit on a decommissioned driver is the classic false-positive.
 		e.Stale = (d.DaysSinceLastSuccess >= 2) || (d.LastSuccess == "" && d.DaysSinceLastSuccess == -1)
 
 		switch {
@@ -1193,9 +988,7 @@ func enrichHealthReport(drivers []routing.DriverHealth) []EnrichedHealthEntry {
 	return entries
 }
 
-// enrichHealthReport adds Redis-backed budget data and recommended actions to a
-// raw HealthReport. Drivers without Redis budget data get nil BudgetPct so the
-// client can distinguish "unknown" from "0%".
+// enrichHealthReport adds Redis-backed budget data and recommended actions.
 func (s *Server) enrichHealthReport(ctx context.Context, drivers []routing.DriverHealth) []routing.DriverHealth {
 	for i, h := range drivers {
 		if s.rdb != nil {
@@ -1232,27 +1025,24 @@ func toolDefs() []ToolDef {
 	return []ToolDef{
 		{
 			Name:        "memory_store",
-			Description: "Store a learning in the swarm knowledge base, tagged with your identity and topics. Pass squadNamespace to isolate memories by squad.",
+			Description: "Store a learning in the swarm knowledge base, tagged with your identity and topics.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"content":        map[string]string{"type": "string", "description": "What you learned / observed / decided"},
-					"topics":         map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Topic tags"},
-					"squadNamespace": map[string]string{"type": "string", "description": "Optional squad namespace for isolation (e.g. 'octi-pulpo', 'chitin'). Omit for root namespace."},
+					"content": map[string]string{"type": "string", "description": "What you learned / observed / decided"},
+					"topics":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Topic tags"},
 				},
 				"required": []string{"content", "topics"},
 			},
 		},
 		{
 			Name:        "memory_recall",
-			Description: "Search the swarm knowledge base. Scoped by squadNamespace when provided, or cross-squad when crossSquad=true.",
+			Description: "Search the swarm knowledge base by keyword and semantic similarity.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"query":          map[string]string{"type": "string", "description": "What are you looking for?"},
-					"limit":          map[string]interface{}{"type": "number", "description": "Max results (default 5)"},
-					"squadNamespace": map[string]string{"type": "string", "description": "Search within a specific squad namespace. Omit for root namespace."},
-					"crossSquad":     map[string]interface{}{"type": "boolean", "description": "Search across all squad namespaces (overrides squadNamespace). Default false."},
+					"query": map[string]string{"type": "string", "description": "What are you looking for?"},
+					"limit": map[string]interface{}{"type": "number", "description": "Max results (default 5)"},
 				},
 				"required": []string{"query"},
 			},
@@ -1264,7 +1054,7 @@ func toolDefs() []ToolDef {
 		},
 		{
 			Name:        "tier_activity",
-			Description: "Summarize dispatch activity by Ladder Forge tier (local/actions/copilot/desktop/human/unknown) over the last N hours. v0 telemetry — T1 local reports 0 until the dedicated GPU box is online; legacy entries without a tier field are counted as unknown. The old T3 'cloud-scheduled' bucket was retired 2026-04-15.",
+			Description: "Summarize dispatch activity by Ladder Forge tier over the last N hours.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1299,35 +1089,32 @@ func toolDefs() []ToolDef {
 		},
 		{
 			Name:        "route_recommend",
-			Description: "Get the recommended driver for a task based on cost tier and driver health. Returns cheapest healthy driver with fallback options.",
+			Description: "Get the recommended driver for a task based on cost tier and driver health.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"taskDescription": map[string]string{"type": "string", "description": "Describe the task"},
-					"budget":          map[string]interface{}{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Budget tier — low (local only), medium (local+subscription+cli), high (all)"},
+					"budget":          map[string]interface{}{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Budget tier"},
 				},
 				"required": []string{"taskDescription"},
 			},
 		},
 		{
 			Name:        "health_report",
-			Description: "Get current health status of all drivers in the swarm — circuit breaker state, failure counts, last success/failure timestamps, time since last success, and recommended actions per driver.",
-			InputSchema: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
+			Description: "Get current health status of all drivers in the swarm.",
+			InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		},
 		{
 			Name:        "dispatch_event",
-			Description: "Submit an event for routing through the dispatcher. The event is matched against rules and dispatched to the appropriate agent(s) with coordination, cooldown, and budget checks.",
+			Description: "Submit an event for routing through the dispatcher.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"eventType": map[string]interface{}{"type": "string", "enum": []string{"pr.opened", "pr.updated", "ci.completed", "timer", "budget.change", "manual", "slack.action"}, "description": "Event type"},
-					"source":    map[string]string{"type": "string", "description": "Event source (github, cron, slack, manual)"},
-					"repo":      map[string]string{"type": "string", "description": "Repository full name (e.g. chitinhq/kernel)"},
+					"eventType": map[string]interface{}{"type": "string", "description": "Event type"},
+					"source":    map[string]string{"type": "string", "description": "Event source"},
+					"repo":      map[string]string{"type": "string", "description": "Repository full name"},
 					"payload":   map[string]interface{}{"type": "object", "description": "Event-specific key-value data"},
-					"priority":  map[string]interface{}{"type": "number", "description": "Priority (0=critical, 1=high, 2=normal, 3=background)"},
+					"priority":  map[string]interface{}{"type": "number", "description": "Priority (0=critical, 3=background)"},
 				},
 				"required": []string{"eventType"},
 			},
@@ -1335,306 +1122,200 @@ func toolDefs() []ToolDef {
 		{
 			Name:        "dispatch_status",
 			Description: "Show current dispatch queue depth, pending agents, and recent dispatch decisions.",
-			InputSchema: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
+			InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		},
 		{
 			Name:        "dispatch_trigger",
-			Description: "Manually trigger an agent run. Bypasses event matching but still respects cooldown and coordination claims.",
+			Description: "Manually trigger an agent run. Bypasses event matching but still respects cooldown.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"agent":    map[string]string{"type": "string", "description": "Agent name to trigger"},
-					"priority": map[string]interface{}{"type": "number", "description": "Priority (0=critical, 1=high, 2=normal, 3=background). Default: 1"},
-					"budget":   map[string]interface{}{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Budget tier override — low (local only), medium (local+subscription+cli), high (all). Omit to use dynamic routing."},
+					"priority": map[string]interface{}{"type": "number", "description": "Priority (0=critical, 3=background). Default: 1"},
+					"budget":   map[string]interface{}{"type": "string", "enum": []string{"low", "medium", "high"}, "description": "Budget tier override"},
 				},
 				"required": []string{"agent"},
 			},
 		},
 		{
 			Name:        "sprint_status",
-			Description: "Return all sprint items grouped by squad. Shows issue numbers, titles, priority, status, and dependencies.",
-			InputSchema: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
+			Description: "Return all sprint items grouped by repo. Shows issue numbers, titles, priority, status, and dependencies.",
+			InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		},
 		{
 			Name:        "sprint_sync",
 			Description: "Trigger a sync of sprint items from GitHub issues across all tracked repos.",
-			InputSchema: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
+			InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		},
 		{
 			Name:        "sprint_create",
-			Description: "Manually create or upsert a sprint item. Use when an agent identifies work during brainstorm/research that should flow into the sprint backlog, or to pre-load items with explicit priority and dependency chains before sprint_sync runs. Set create_github_issue=true to also open a real GitHub issue.",
+			Description: "Manually create or upsert a sprint item.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"repo":                 map[string]string{"type": "string", "description": "Repo (e.g. chitinhq/octi-pulpo)"},
-					"issue_num":            map[string]interface{}{"type": "number", "description": "GitHub issue number. Use 0 (or omit) when create_github_issue=true to let the tool assign one."},
-					"title":                map[string]string{"type": "string", "description": "Sprint item title"},
-					"priority":             map[string]interface{}{"type": "number", "enum": []int{0, 1, 2}, "description": "Priority: 0=P0 critical, 1=P1 high, 2=P2 normal"},
-					"depends_on":           map[string]interface{}{"type": "array", "items": map[string]string{"type": "number"}, "description": "Issue numbers that must complete before this item can be dispatched"},
-					"assign_to":            map[string]string{"type": "string", "description": "Agent name to assign (e.g. sr-kernel-01). Leave empty for auto-dispatch."},
-					"squad":                map[string]string{"type": "string", "description": "Squad name. Inferred from repo if omitted."},
-					"create_github_issue":  map[string]interface{}{"type": "boolean", "description": "When true, creates a real GitHub issue in the repo and uses the returned number. Only effective when issue_num is 0."},
-					"body":                 map[string]string{"type": "string", "description": "Issue body / description. Used only when create_github_issue=true."},
-					"labels":               map[string]string{"type": "string", "description": "Comma-separated label names to apply. Used only when create_github_issue=true."},
+					"repo":                map[string]string{"type": "string", "description": "Repo (e.g. chitinhq/octi)"},
+					"issue_num":           map[string]interface{}{"type": "number", "description": "GitHub issue number."},
+					"title":               map[string]string{"type": "string", "description": "Sprint item title"},
+					"priority":            map[string]interface{}{"type": "number", "description": "Priority: 0=P0, 1=P1, 2=P2"},
+					"depends_on":          map[string]interface{}{"type": "array", "items": map[string]string{"type": "number"}, "description": "Issue numbers that must complete first"},
+					"assign_to":           map[string]string{"type": "string", "description": "Agent name to assign."},
+					"create_github_issue": map[string]interface{}{"type": "boolean", "description": "When true, creates a real GitHub issue."},
+					"body":                map[string]string{"type": "string", "description": "Issue body."},
+					"labels":              map[string]string{"type": "string", "description": "Comma-separated label names."},
 				},
 				"required": []string{"repo", "title"},
 			},
 		},
 		{
 			Name:        "sprint_reprioritize",
-			Description: "Change the priority of a sprint item. Use when the CTO says 'make this P0' or 'deprioritize this'. Affects dispatch order — P0 items are dispatched before P1/P2.",
+			Description: "Change the priority of a sprint item.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"issue_num": map[string]interface{}{"type": "number", "description": "GitHub issue number to reprioritize"},
-					"priority":  map[string]interface{}{"type": "number", "enum": []int{0, 1, 2}, "description": "New priority: 0=P0 critical, 1=P1 high, 2=P2 normal"},
-					"repo":      map[string]string{"type": "string", "description": "Repo (e.g. chitinhq/octi-pulpo). If omitted, all tracked repos are searched."},
+					"issue_num": map[string]interface{}{"type": "number", "description": "Issue number"},
+					"priority":  map[string]interface{}{"type": "number", "description": "New priority: 0=P0, 1=P1, 2=P2"},
+					"repo":      map[string]string{"type": "string", "description": "Repo"},
 				},
 				"required": []string{"issue_num", "priority"},
 			},
 		},
 		{
 			Name:        "sprint_complete",
-			Description: "Mark a sprint item as done and optionally close the GitHub issue with a comment. Unblocks any dependent items. Call after merging a PR or closing an issue outside of the normal sync cycle.",
+			Description: "Mark a sprint item as done and optionally close the GitHub issue.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"issue_num": map[string]interface{}{"type": "number", "description": "GitHub issue number to mark done"},
-					"repo":      map[string]string{"type": "string", "description": "Repo (e.g. chitinhq/octi-pulpo). If omitted, all tracked repos are searched."},
-					"summary":   map[string]string{"type": "string", "description": "Optional run summary. When provided, closes the GitHub issue and posts this text as a comment. Leave empty to only update Redis without touching GitHub."},
-					"skip_gates": map[string]string{"type": "boolean", "description": "Migration escape hatch — skip the chitin gate chain (validate/check_ci_passed). Default false; gates block completion on failure."},
+					"issue_num":  map[string]interface{}{"type": "number", "description": "Issue number"},
+					"repo":       map[string]string{"type": "string", "description": "Repo"},
+					"summary":    map[string]string{"type": "string", "description": "Run summary."},
+					"skip_gates": map[string]string{"type": "boolean", "description": "Migration escape hatch."},
 				},
 				"required": []string{"issue_num"},
 			},
 		},
 		{
 			Name:        "benchmark_status",
-			Description: "Return swarm throughput and health metrics: PRs/hour, commits/run, waste %, budget efficiency, active agents, queue depth, pass rate, and QAI-X composite health index (0-100).",
-			InputSchema: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
-		},
-		{
-			Name:        "org_chart",
-			Description: "Return the agent org chart. Without arguments returns the full tree. With an agent name returns that agent's record, chain of command, and direct reports.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"agent": map[string]interface{}{
-						"type":        "string",
-						"description": "Optional agent name to get specific record + chain of command",
-					},
-				},
-			},
+			Description: "Return swarm throughput and health metrics.",
+			InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		},
 		{
 			Name:        "agent_leaderboard",
-			Description: "Rank all agents by productivity score. Returns a scored, sorted list with verdicts (promote/retain/monitor/fire) derived from commit output, reliability, and execution duration. Agents with no run history are omitted.",
-			InputSchema: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
+			Description: "Rank all agents by productivity score.",
+			InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		},
 		{
 			Name:        "bootcheck_status",
-			Description: "Return the most recent startup telemetry self-audit report (dispatch-log writable, benchmark counters wired, driver health fresh, leaderboard sink wired, adapter reachability). Each check is green/yellow/red. Use this to detect telemetry-lie failure modes from a remote MCP client.",
-			InputSchema: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
-		},
-		{
-			Name:        "request_work",
-			Description: "Request work from another squad. The request is stored and routed to the target squad's agents on their next tick. Use when you need a report, query, review, fix, or deploy from a different squad's domain.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"to_squad":         map[string]string{"type": "string", "description": "Target squad name (e.g. 'analytics', 'kernel', 'shellforge')"},
-					"type":             map[string]interface{}{"type": "string", "enum": []string{"report", "query", "review", "fix", "deploy"}, "description": "Work type"},
-					"description":      map[string]string{"type": "string", "description": "What you need done"},
-					"priority":         map[string]interface{}{"type": "number", "description": "0=urgent, 1=high, 2=normal (default 2)"},
-					"deadline_minutes": map[string]interface{}{"type": "number", "description": "How soon you need this (in minutes). Default: 1440 (24h)"},
-				},
-				"required": []string{"to_squad", "description"},
-			},
-		},
-		{
-			Name:        "check_requests",
-			Description: "Check for incoming cross-squad work requests targeting your squad. Returns pending requests with age, priority, and description. Call at the start of each run to pick up delegated work.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"squad": map[string]string{"type": "string", "description": "Your squad name (e.g. 'analytics', 'kernel')"},
-				},
-				"required": []string{"squad"},
-			},
-		},
-		{
-			Name:        "fulfill_request",
-			Description: "Mark a cross-squad request as complete. Notifies the requesting agent via coord_signal and removes the request from the pending queue.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"request_id": map[string]string{"type": "string", "description": "Request ID returned by request_work or check_requests"},
-					"result":     map[string]string{"type": "string", "description": "Summary of the work done / where to find the output"},
-					"pr_number":  map[string]interface{}{"type": "number", "description": "PR number if the work resulted in a pull request (optional)"},
-				},
-				"required": []string{"request_id", "result"},
-			},
-		},
-		{
-			Name:        "standup_report",
-			Description: "Post your squad's async daily standup. Records what was done, what's in progress, what's blocked, and any cross-squad requests. One entry per squad per day (later calls overwrite).",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"squad":    map[string]string{"type": "string", "description": "Squad name (e.g. 'octi-pulpo', 'kernel'). Defaults to your agent ID if omitted."},
-					"done":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "What was completed since last standup"},
-					"doing":    map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "What is currently in progress"},
-					"blocked":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Blockers (issues, PRs waiting for review, etc.)"},
-					"requests": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Cross-squad requests or asks"},
-				},
-				"required": []string{},
-			},
-		},
-		{
-			Name:        "standup_read",
-			Description: "Read a squad's standup for today. Pass squad name for a single squad, or set all=true for the full daily summary across all squads.",
-			InputSchema: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"squad": map[string]string{"type": "string", "description": "Squad name to read (e.g. 'octi-pulpo'). Required unless all=true."},
-					"all":   map[string]interface{}{"type": "boolean", "description": "Set true to return all squads' standups for today."},
-				},
-				"required": []string{},
-			},
+			Description: "Return the most recent startup telemetry self-audit report.",
+			InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		},
 		{
 			Name:        "circuit_reset",
-			Description: "Manually reset a circuit breaker. scope='driver' (default) resets a per-driver health circuit from OPEN to CLOSED and requires 'driver'. scope='swarm' clears the swarm-wide pause set by sentinel patrol events (no driver required).",
+			Description: "Manually reset a circuit breaker.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"scope":  map[string]interface{}{"type": "string", "enum": []string{"driver", "swarm"}, "description": "Which circuit to reset. 'driver' (default) resets a per-driver health circuit; 'swarm' clears the fleet-wide pause."},
-					"driver": map[string]string{"type": "string", "description": "Driver name to reset (required when scope='driver'). Must match an existing health file (e.g. 'openclaw', 'clawta', 'gh-actions', 'claude-api')."},
-					"note":   map[string]string{"type": "string", "description": "Optional reason for the manual reset (logged in the response for audit purposes)."},
-				},
-				"oneOf": []interface{}{
-					map[string]interface{}{"properties": map[string]interface{}{"scope": map[string]interface{}{"const": "swarm"}}, "required": []string{"scope"}},
-					map[string]interface{}{"required": []string{"driver"}},
+					"scope":  map[string]interface{}{"type": "string", "enum": []string{"driver", "swarm"}, "description": "Which circuit to reset."},
+					"driver": map[string]string{"type": "string", "description": "Driver name."},
+					"note":   map[string]string{"type": "string", "description": "Optional reason for the manual reset."},
 				},
 			},
 		},
 		{
 			Name:        "budget_status",
-			Description: "View budget for a specific agent or all agents. Shows monthly budget limit, amount spent, run count, and paused status.",
+			Description: "View budget for a specific agent or all agents.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"agent": map[string]string{"type": "string", "description": "Agent name (e.g. sr-kernel-01). Omit to list all agents with budget records."},
+					"agent": map[string]string{"type": "string", "description": "Agent name. Omit to list all."},
 				},
 			},
 		},
 		{
 			Name:        "budget_set",
-			Description: "Provision or update an agent's monthly budget. Preserves existing spent/runs history when updating an existing record. Use to onboard a new agent or change their spending limit.",
+			Description: "Provision or update an agent's monthly budget.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"agent":                map[string]string{"type": "string", "description": "Agent name (e.g. sr-kernel-01)"},
-					"budget_monthly_cents": map[string]interface{}{"type": "number", "description": "Monthly budget limit in cents (e.g. 770 = $7.70)"},
-					"driver":               map[string]string{"type": "string", "description": "Driver name (e.g. clawta, openclaw, gh-actions). Optional when updating an existing record."},
-					"box":                  map[string]string{"type": "string", "description": "Box/host the agent runs on. Optional when updating an existing record."},
+					"agent":                map[string]string{"type": "string", "description": "Agent name"},
+					"budget_monthly_cents": map[string]interface{}{"type": "number", "description": "Monthly budget limit in cents"},
+					"driver":               map[string]string{"type": "string", "description": "Driver name."},
+					"box":                  map[string]string{"type": "string", "description": "Box/host."},
 				},
 				"required": []string{"agent", "budget_monthly_cents"},
 			},
 		},
 		{
 			Name:        "budget_reset",
-			Description: "Monthly reset for an agent: zeroes spent, zeroes run count, and clears the paused flag. Use at the start of each billing cycle or to manually unblock a paused agent.",
+			Description: "Monthly reset for an agent.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"agent": map[string]string{"type": "string", "description": "Agent name to reset (e.g. sr-kernel-01)"},
+					"agent": map[string]string{"type": "string", "description": "Agent name to reset"},
 				},
 				"required": []string{"agent"},
 			},
 		},
 		{
 			Name:        "admit_task",
-			Description: "Score a candidate task for admission to the swarm. Returns ACCEPT / DEFER / REJECT / ROUTE_TO_PREFLIGHT with a composite score, blast radius, and reasoning. Run before dispatching any task that touches multiple files or repos.",
+			Description: "Score a candidate task for admission to the swarm.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"title":            map[string]string{"type": "string", "description": "Short task title"},
-					"squad":            map[string]string{"type": "string", "description": "Owning squad (e.g. 'kernel')"},
-					"repo":             map[string]string{"type": "string", "description": "Target repo (e.g. 'chitinhq/kernel')"},
-					"file_paths":       map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Files the task will touch (used for blast-radius scoring)"},
-					"priority":         map[string]interface{}{"type": "integer", "description": "0=CRITICAL, 1=HIGH, 2=NORMAL, 3=BACKGROUND"},
+					"repo":             map[string]string{"type": "string", "description": "Target repo"},
+					"file_paths":       map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Files the task will touch"},
+					"priority":         map[string]interface{}{"type": "integer", "description": "0=CRITICAL, 3=BACKGROUND"},
 					"is_reversible":    map[string]interface{}{"type": "boolean", "description": "Whether the changes can be easily undone"},
-					"spec_clarity":     map[string]interface{}{"type": "number", "description": "0.0-1.0: how complete/unambiguous the task spec is"},
-					"estimated_tokens": map[string]interface{}{"type": "integer", "description": "Approximate token cost for the run (optional)"},
+					"spec_clarity":     map[string]interface{}{"type": "number", "description": "0.0-1.0: how complete the spec is"},
+					"estimated_tokens": map[string]interface{}{"type": "integer", "description": "Approximate token cost"},
 				},
-				"required": []string{"title", "squad", "repo"},
+				"required": []string{"title", "repo"},
 			},
 		},
 		{
 			Name:        "score_spec",
-			Description: "Score an architect-stage spec for completeness before advancing to stage:implement. Checks for acceptance criteria, files to touch, blast radius estimate, and a non-ambiguous approach. Returns Ready=true when all fields pass; Ready=false includes a Feedback message to send back to the architect agent.",
+			Description: "Score an architect-stage spec for completeness.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"title":                map[string]string{"type": "string", "description": "Original issue/task title"},
-					"acceptance_criteria":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Conditions that must be true for the task to be complete (at least one required)"},
-					"files_touched":        map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Files the implementor should modify (at least one required)"},
-					"blast_radius_estimate": map[string]interface{}{"type": "integer", "description": "Architect's estimate of total files changed"},
-					"approach":             map[string]string{"type": "string", "description": "Specific implementation strategy (not a placeholder)"},
+					"title":                 map[string]string{"type": "string", "description": "Original issue/task title"},
+					"acceptance_criteria":   map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Conditions for completion"},
+					"files_touched":         map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Files to modify"},
+					"blast_radius_estimate": map[string]interface{}{"type": "integer", "description": "Total files changed estimate"},
+					"approach":              map[string]string{"type": "string", "description": "Specific implementation strategy"},
 				},
 				"required": []string{"title"},
 			},
 		},
 		{
 			Name:        "lock_domain",
-			Description: "Acquire an exclusive domain lock before touching a contested surface (file path, branch, or service). Returns ACQUIRED or DENIED with the current holder. Lock auto-expires after ttl_seconds to handle agent crashes.",
+			Description: "Acquire an exclusive domain lock before touching a contested surface.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"domain":      map[string]string{"type": "string", "description": "Lock target: 'file:api/orders/', 'branch:feat/auth', or 'service:payments'"},
-					"holder":      map[string]string{"type": "string", "description": "Agent identity acquiring the lock (e.g. 'sr-octi-pulpo-01')"},
-					"ttl_seconds": map[string]interface{}{"type": "integer", "description": "Lock expiry in seconds (default 900). Set to task max duration to auto-release on crash."},
+					"domain":      map[string]string{"type": "string", "description": "Lock target"},
+					"holder":      map[string]string{"type": "string", "description": "Agent identity"},
+					"ttl_seconds": map[string]interface{}{"type": "integer", "description": "Lock expiry in seconds."},
 				},
 				"required": []string{"domain", "holder"},
 			},
 		},
 		{
 			Name:        "unlock_domain",
-			Description: "Release a domain lock when your task is complete. Only the original holder can release their lock.",
+			Description: "Release a domain lock.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"domain": map[string]string{"type": "string", "description": "Domain surface to release (must match what was passed to lock_domain)"},
-					"holder": map[string]string{"type": "string", "description": "Agent identity that holds the lock"},
+					"domain": map[string]string{"type": "string", "description": "Domain surface"},
+					"holder": map[string]string{"type": "string", "description": "Agent identity"},
 				},
 				"required": []string{"domain", "holder"},
 			},
 		},
 		{
 			Name:        "list_domain_locks",
-			Description: "List all currently active domain locks across the swarm. Expired locks are pruned automatically. Use to check for conflicts before starting work.",
-			InputSchema: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
+			Description: "List all currently active domain locks across the swarm.",
+			InputSchema: map[string]interface{}{"type": "object", "properties": map[string]interface{}{}},
 		},
 		{
 			Name:        "dispatch_anthropic",
@@ -1643,23 +1324,23 @@ func toolDefs() []ToolDef {
 				"type": "object",
 				"properties": map[string]any{
 					"prompt":   map[string]any{"type": "string", "description": "Task prompt"},
-					"repo":     map[string]any{"type": "string", "description": "Target repo (owner/name)"},
-					"type":     map[string]any{"type": "string", "description": "Task type: code-gen, bugfix, pr-review, qa, triage"},
-					"priority": map[string]any{"type": "string", "description": "Priority: critical, high, normal, background"},
+					"repo":     map[string]any{"type": "string", "description": "Target repo"},
+					"type":     map[string]any{"type": "string", "description": "Task type"},
+					"priority": map[string]any{"type": "string", "description": "Priority"},
 				},
 				"required": []string{"prompt"},
 			},
 		},
 		{
 			Name:        "dispatch_prompt_to_cli",
-			Description: "Dispatch a freeform prompt to a local CLI agent (openclaw). No API key, no worktree.",
+			Description: "Dispatch a freeform prompt to a local CLI agent (openclaw).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"prompt":           map[string]any{"type": "string", "description": "Freeform prompt to send"},
+					"prompt":           map[string]any{"type": "string", "description": "Freeform prompt"},
 					"preferred_driver": map[string]any{"type": "string", "description": "openclaw (optional)"},
-					"timeout_seconds":  map[string]any{"type": "integer", "description": "Timeout in seconds (default 120)"},
-					"system_prompt":    map[string]any{"type": "string", "description": "Optional system prompt appended to the driver's default"},
+					"timeout_seconds":  map[string]any{"type": "integer", "description": "Timeout in seconds"},
+					"system_prompt":    map[string]any{"type": "string", "description": "Optional system prompt"},
 				},
 				"required": []string{"prompt"},
 			},
@@ -1671,7 +1352,7 @@ func toolDefs() []ToolDef {
 				"type": "object",
 				"properties": map[string]any{
 					"prompt":   map[string]any{"type": "string", "description": "Task prompt"},
-					"repo":     map[string]any{"type": "string", "description": "Target repo (owner/name)"},
+					"repo":     map[string]any{"type": "string", "description": "Target repo"},
 					"type":     map[string]any{"type": "string", "description": "Task type"},
 					"priority": map[string]any{"type": "string", "description": "Priority level"},
 				},
@@ -1680,7 +1361,7 @@ func toolDefs() []ToolDef {
 		},
 		{
 			Name:        "swarm_today",
-			Description: "1-screen daily swarm observability view — PRs, issues, tiers, swarm runs, drivers, budget, and alerts for the last N hours. Supersedes dispatch_status + health_report + agent_leaderboard for the daily check-in flow. Returns both JSON structure and a terse human-readable text block.",
+			Description: "1-screen daily swarm observability view.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

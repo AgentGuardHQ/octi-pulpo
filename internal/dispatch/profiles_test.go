@@ -151,10 +151,10 @@ func TestAdaptiveCooldown_NoHistory(t *testing.T) {
 	d, ctx := testSetup(t)
 	ps := NewProfileStore(d.rdb, d.namespace, d.events.CooldownFor)
 
-	// kernel-sr has a 3h static cooldown
-	cooldown := ps.AdaptiveCooldown(ctx, "kernel-sr")
-	if cooldown != 3*time.Hour {
-		t.Fatalf("expected 3h static fallback for kernel-sr, got %s", cooldown)
+	// workspace-pr-review-agent has a 5m static cooldown from DefaultRules.
+	cooldown := ps.AdaptiveCooldown(ctx, "workspace-pr-review-agent")
+	if cooldown != 5*time.Minute {
+		t.Fatalf("expected 5m static fallback for workspace-pr-review-agent, got %s", cooldown)
 	}
 }
 

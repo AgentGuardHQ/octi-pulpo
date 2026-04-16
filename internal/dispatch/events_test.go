@@ -441,17 +441,14 @@ func TestEventRouter_DefaultRules(t *testing.T) {
 		t.Fatal("expected default rules to be non-empty")
 	}
 
-	// Verify some expected rules exist
+	// Verify some expected rules exist. Timer rules were removed in octi#271
+	// Phase 2+3 when SR agents were excised — no timer assertion anymore.
 	hasPROpenedKernel := false
-	hasTimerKernelSR := false
 	hasManualWildcard := false
 
 	for _, rule := range rules {
 		if rule.EventType == EventPROpened && rule.RepoMatch == "chitinhq/kernel" && rule.AgentName == "workspace-pr-review-agent" {
 			hasPROpenedKernel = true
-		}
-		if rule.EventType == EventTimer && rule.AgentName == "kernel-sr" {
-			hasTimerKernelSR = true
 		}
 		if rule.EventType == EventManual && rule.AgentName == "*" {
 			hasManualWildcard = true
@@ -460,9 +457,6 @@ func TestEventRouter_DefaultRules(t *testing.T) {
 
 	if !hasPROpenedKernel {
 		t.Error("expected default rules to include PR opened for chitinhq/kernel")
-	}
-	if !hasTimerKernelSR {
-		t.Error("expected default rules to include timer for kernel-sr")
 	}
 	if !hasManualWildcard {
 		t.Error("expected default rules to include manual wildcard")

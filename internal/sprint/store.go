@@ -23,7 +23,6 @@ var issueRefRe = regexp.MustCompile(`(?i)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]
 
 // SprintItem represents a single issue in the sprint backlog.
 type SprintItem struct {
-	Squad     string `json:"squad"`
 	IssueNum  int    `json:"issue_num"`
 	Repo      string `json:"repo"`
 	Title     string `json:"title"`
@@ -230,9 +229,6 @@ func (s *Store) Sync(ctx context.Context, repo string) error {
 			assignTo = issue.Assignees[0].Login
 		}
 
-		// Infer squad from repo
-		squad := inferSquadFromRepo(repo)
-
 		// Collect label names for fast-path detection
 		labelNames := make([]string, len(issue.Labels))
 		for i, lbl := range issue.Labels {
@@ -244,7 +240,6 @@ func (s *Store) Sync(ctx context.Context, repo string) error {
 		existing, _ := s.rdb.Get(ctx, key).Result()
 
 		item := SprintItem{
-			Squad:     squad,
 			IssueNum:  issue.Number,
 			Repo:      repo,
 			Title:     issue.Title,
@@ -566,22 +561,6 @@ func (s *Store) GetAll(ctx context.Context) ([]SprintItem, error) {
 	return items, nil
 }
 
-// GetBySquad returns sprint items filtered by squad name.
-func (s *Store) GetBySquad(ctx context.Context, squad string) ([]SprintItem, error) {
-	all, err := s.GetAll(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var filtered []SprintItem
-	for _, item := range all {
-		if item.Squad == squad {
-			filtered = append(filtered, item)
-		}
-	}
-	return filtered, nil
-}
-
 // getByRepo returns all sprint items for a specific repo by scanning Redis keys.
 func (s *Store) getByRepo(ctx context.Context, repo string) ([]SprintItem, error) {
 	pattern := s.namespace + ":sprint:" + repo + ":*"
@@ -824,7 +803,7 @@ func (s *Store) Complete(ctx context.Context, repo string, issueNum int) (unbloc
 }
 
 // Create manually inserts or replaces a sprint item in Redis.
-// repo and issue_num are required; title is required; squad is inferred from repo if empty.
+// repo and issue_num are required; title is required.
 // status defaults to "open" if not provided.
 func (s *Store) Create(ctx context.Context, item SprintItem) error {
 	if item.Repo == "" {
@@ -835,9 +814,6 @@ func (s *Store) Create(ctx context.Context, item SprintItem) error {
 	}
 	if item.Title == "" {
 		return fmt.Errorf("title is required")
-	}
-	if item.Squad == "" {
-		item.Squad = inferSquadFromRepo(item.Repo)
 	}
 	if item.Status == "" {
 		item.Status = "open"
@@ -862,33 +838,4 @@ func (s *Store) itemKey(repo string, issueNum int) string {
 
 func (s *Store) key(suffix string) string {
 	return s.namespace + ":" + suffix
-}
-
-// inferSquadFromRepo maps a repo name to a squad.
-func inferSquadFromRepo(repo string) string {
-	parts := strings.Split(repo, "/")
-	if len(parts) != 2 {
-		return "unknown"
-	}
-	name := parts[1]
-	switch {
-	case name == "kernel":
-		return "kernel"
-	case name == "cloud":
-		return "cloud"
-	case name == "analytics":
-		return "analytics"
-	case name == "extensions" || name == "preflight" || name == "homebrew-tap":
-		return "kernel"
-	case name == "workspace":
-		return "ops"
-	case name == "shellforge":
-		return "shellforge"
-	case name == "octi":
-		return "octi-pulpo"
-	case strings.HasPrefix(name, "studio"):
-		return "studio"
-	default:
-		return name
-	}
 }

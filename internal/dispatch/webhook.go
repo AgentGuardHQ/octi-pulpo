@@ -695,10 +695,10 @@ func (ws *WebhookServer) handleSprintStatus(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Group by squad
+	// Group by repo (was squad pre-octi#271).
 	grouped := make(map[string][]sprint.SprintItem)
 	for _, item := range items {
-		grouped[item.Squad] = append(grouped[item.Squad], item)
+		grouped[item.Repo] = append(grouped[item.Repo], item)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -791,14 +791,14 @@ func (ws *WebhookServer) SetBudgetStore(bs *budget.BudgetStore) {
 // Slack POSTs application/x-www-form-urlencoded with a "payload" field containing JSON.
 //
 // Supported action_ids and their effects:
-//   - pause_squad    — publishes a "pause-squad:<driver>" coord signal to Redis
+//   - pause_driver   — publishes a pause directive for the given driver
 //   - switch_tier    — dispatches the routing recalculation agent
 //   - ignore_alert   — no-op, acknowledges the alert
 //   - merge_pr       — triggers pr-merger-agent for the given repo/pr
 //   - review_pr      — no-op, acknowledges
 //   - skip_pr        — no-op, acknowledges
-//   - accept_goal    — publishes a "goal-accepted:<squad>" coord signal
-//   - request_changes — publishes a "goal-rejected:<squad>" coord signal
+//   - accept_goal    — publishes a goal-accepted signal for the repo
+//   - reject_goal    — publishes a goal-rejected signal for the repo
 func (ws *WebhookServer) handleSlackActions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -879,15 +879,15 @@ func (ws *WebhookServer) handleSlackActions(w http.ResponseWriter, r *http.Reque
 // It returns a human-readable acknowledgement string for the Slack message update.
 func (ws *WebhookServer) routeSlackAction(ctx context.Context, actionID, value, actor string) (string, error) {
 	switch actionID {
-	case "pause_squad":
+	case "pause_driver":
 		// Publish a pause signal to Redis for this driver.
 		ch := ws.dispatcher.Namespace() + ":signal-stream"
-		sig := fmt.Sprintf(`{"agent_id":"slack:%s","type":"directive","payload":"pause-squad:%s","timestamp":"%s"}`,
+		sig := fmt.Sprintf(`{"agent_id":"slack:%s","type":"directive","payload":"pause-driver:%s","timestamp":"%s"}`,
 			actor, value, time.Now().UTC().Format(time.RFC3339))
 		if err := ws.dispatcher.RedisClient().Publish(ctx, ch, sig).Err(); err != nil {
 			return "", fmt.Errorf("publish pause signal: %w", err)
 		}
-		return fmt.Sprintf("⏸ Squad paused for driver `%s` by @%s", value, actor), nil
+		return fmt.Sprintf("⏸ Driver `%s` paused by @%s", value, actor), nil
 
 	case "switch_tier":
 		// Trigger the routing recalculation by dispatching the senior agent.

@@ -131,15 +131,6 @@ func (n *NtfyNotifier) PostStuckAgentAlert(ctx context.Context, agent string, co
 	return n.send(ctx, "Stuck Agent: "+agent, msg, NtfyPriorityHigh, nil)
 }
 
-// PostInactiveSquadAlert sends a high-priority alert for an inactive squad.
-func (n *NtfyNotifier) PostInactiveSquadAlert(ctx context.Context, squad string, idleHours int) error {
-	if !n.Enabled() {
-		return nil
-	}
-	msg := fmt.Sprintf("Squad %s has had no dispatch activity for %d hours.", squad, idleHours)
-	return n.send(ctx, "Inactive Squad: "+squad, msg, NtfyPriorityHigh, nil)
-}
-
 // PostDriversDown sends a max-priority alert when all drivers are exhausted.
 func (n *NtfyNotifier) PostDriversDown(ctx context.Context, description string) error {
 	return n.PostAllDriversDown(ctx, description)
