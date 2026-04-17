@@ -94,10 +94,23 @@ func classifyFastPath(title string, labels []string) bool {
 
 // dispatchLabelStatus maps dispatch state machine labels to sprint item statuses.
 // Returns "" if no dispatch label is present.
-func dispatchLabelStatus(labels []string) string {
+//
+// When closedSet contains issueNum, an "agent:claimed" label is treated as a
+// zombie (stale lock on an already-closed issue) and skipped, so the item can
+// fall through to SyncClosed / tombstoneFromOpenSet and resolve to "done".
+// Terminal labels ("agent:done") and explicit blockers still win — only the
+// claim-lock is suppressed, since the claim is what re-animates closed work.
+// See chitinhq/octi thread go-2026-04-17-0006 (turing slice): the label is
+// lying; this is the guard that stops the store from inheriting the lie.
+func dispatchLabelStatus(issueNum int, labels []string, closedSet map[int]bool) string {
+	closed := closedSet[issueNum]
 	for _, lbl := range labels {
 		switch lbl {
 		case "agent:claimed":
+			if closed {
+				// Zombie claim on a closed issue — ignore and let done win.
+				continue
+			}
 			return "claimed"
 		case "agent:done":
 			return "done"
@@ -207,6 +220,16 @@ func (s *Store) Sync(ctx context.Context, repo string) error {
 		return fmt.Errorf("parse gh output for %s: %w", repo, err)
 	}
 
+	// Fetch the closed set BEFORE iterating open issues so dispatchLabelStatus
+	// can suppress zombie "agent:claimed" labels on issues GitHub considers
+	// closed. If the fetch fails we log and proceed with an empty set — the
+	// label promotion then behaves exactly like the pre-guard code path.
+	closedSet, err := s.fetchClosedSet(ctx, repo)
+	if err != nil {
+		s.log.Printf("fetchClosedSet %s: %v (proceeding without closed-guard)", repo, err)
+		closedSet = map[int]bool{}
+	}
+
 	pipe := s.rdb.Pipeline()
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -253,7 +276,8 @@ func (s *Store) Sync(ctx context.Context, repo string) error {
 
 		// Dispatch state machine labels override local status — GitHub is
 		// the source of truth for claim/done state set by the brain.
-		if labelStatus := dispatchLabelStatus(labelNames); labelStatus != "" {
+		// closedSet suppresses zombie "agent:claimed" labels (see function doc).
+		if labelStatus := dispatchLabelStatus(issue.Number, labelNames, closedSet); labelStatus != "" {
 			item.Status = labelStatus
 		}
 
@@ -597,11 +621,12 @@ func (s *Store) getByRepo(ctx context.Context, repo string) ([]SprintItem, error
 	return items, nil
 }
 
-// SyncClosed fetches recently closed issues from a GitHub repo and marks
-// any matching sprint items as "done". This prevents the brain from
-// re-dispatching work that has already shipped.
-// The limit matches syncOpenLimit so the window is consistent with the open-issue sync.
-func (s *Store) SyncClosed(ctx context.Context, repo string) error {
+// fetchClosedSet returns the set of recently-closed issue numbers for a repo,
+// bounded by syncOpenLimit. Used by Sync to suppress zombie "agent:claimed"
+// labels on issues GitHub already considers closed. On error the caller should
+// treat the set as empty rather than fail the sync — the guard is
+// belt-and-suspenders; SyncClosed still runs after the open-issue loop.
+func (s *Store) fetchClosedSet(ctx context.Context, repo string) (map[int]bool, error) {
 	cmd := exec.CommandContext(ctx, "gh", "issue", "list",
 		"-R", repo,
 		"--state", "closed",
@@ -610,19 +635,33 @@ func (s *Store) SyncClosed(ctx context.Context, repo string) error {
 	)
 	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("gh issue list --state closed -R %s: %w", repo, err)
+		return nil, fmt.Errorf("gh issue list --state closed -R %s: %w", repo, err)
 	}
-
 	var issues []struct {
 		Number int `json:"number"`
 	}
 	if err := json.Unmarshal(out, &issues); err != nil {
-		return fmt.Errorf("parse closed issues for %s: %w", repo, err)
+		return nil, fmt.Errorf("parse closed issues for %s: %w", repo, err)
 	}
+	set := make(map[int]bool, len(issues))
+	for _, issue := range issues {
+		set[issue.Number] = true
+	}
+	return set, nil
+}
 
-	nums := make([]int, len(issues))
-	for i, issue := range issues {
-		nums[i] = issue.Number
+// SyncClosed fetches recently closed issues from a GitHub repo and marks
+// any matching sprint items as "done". This prevents the brain from
+// re-dispatching work that has already shipped.
+// The limit matches syncOpenLimit so the window is consistent with the open-issue sync.
+func (s *Store) SyncClosed(ctx context.Context, repo string) error {
+	closedSet, err := s.fetchClosedSet(ctx, repo)
+	if err != nil {
+		return err
+	}
+	nums := make([]int, 0, len(closedSet))
+	for n := range closedSet {
+		nums = append(nums, n)
 	}
 
 	marked, err := s.markClosedItems(ctx, repo, nums)
