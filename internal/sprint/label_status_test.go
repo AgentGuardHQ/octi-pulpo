@@ -40,6 +40,36 @@ func TestDispatchLabelStatus_ClosedSetSuppressesClaim(t *testing.T) {
 	}
 }
 
+// TestDispatchLabelStatus_PriorityIndependentOfLabelOrder pins the fix for
+// Copilot's review note on PR #276: GitHub does not guarantee label ordering
+// on an issue, so dispatchLabelStatus must pick by priority (terminal > review
+// > blocked > claimed) rather than by first-match in the slice. Before the
+// priority-set fix, [agent:claimed, agent:done] resolved to "claimed" and
+// shadowed the terminal state.
+func TestDispatchLabelStatus_PriorityIndependentOfLabelOrder(t *testing.T) {
+	cases := []struct {
+		name   string
+		labels []string
+		want   string
+	}{
+		{"done-before-claimed", []string{"agent:done", "agent:claimed"}, "done"},
+		{"claimed-before-done", []string{"agent:claimed", "agent:done"}, "done"},
+		{"review-beats-claimed-order1", []string{"agent:review", "agent:claimed"}, "pr_open"},
+		{"review-beats-claimed-order2", []string{"agent:claimed", "agent:review"}, "pr_open"},
+		{"blocked-beats-claimed-order1", []string{"agent:blocked", "agent:claimed"}, "blocked"},
+		{"blocked-beats-claimed-order2", []string{"agent:claimed", "agent:blocked"}, "blocked"},
+		{"done-beats-blocked", []string{"agent:blocked", "agent:done"}, "done"},
+		{"noise-around-done", []string{"bug", "agent:done", "P1"}, "done"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dispatchLabelStatus(1, tc.labels, nil); got != tc.want {
+				t.Errorf("labels=%v: got %q, want %q", tc.labels, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDispatchLabelStatus_NoDispatchLabel confirms the empty-string return is
 // preserved when no dispatch label is present, regardless of closedSet state.
 func TestDispatchLabelStatus_NoDispatchLabel(t *testing.T) {

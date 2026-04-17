@@ -103,22 +103,32 @@ func classifyFastPath(title string, labels []string) bool {
 // See chitinhq/octi thread go-2026-04-17-0006 (turing slice): the label is
 // lying; this is the guard that stops the store from inheriting the lie.
 func dispatchLabelStatus(issueNum int, labels []string, closedSet map[int]bool) string {
-	closed := closedSet[issueNum]
+	// Build a set so we can check by priority order rather than by GitHub's
+	// (unspecified) label ordering on the issue. Without this, a label slice
+	// of ["agent:claimed", "agent:done"] would resolve to "claimed" and shadow
+	// the terminal state — bug Copilot caught on the initial turing patch.
+	set := make(map[string]bool, len(labels))
 	for _, lbl := range labels {
-		switch lbl {
-		case "agent:claimed":
-			if closed {
-				// Zombie claim on a closed issue — ignore and let done win.
-				continue
-			}
-			return "claimed"
-		case "agent:done":
-			return "done"
-		case "agent:review":
-			return "pr_open"
-		case "agent:blocked":
-			return "blocked"
+		set[lbl] = true
+	}
+
+	// Priority: terminal > review > blocked > claimed. Claim is the weakest
+	// signal because it is the one the brain writes speculatively and the
+	// one that leaks (zombie-claims finding, session 2026-04-17-0006).
+	switch {
+	case set["agent:done"]:
+		return "done"
+	case set["agent:review"]:
+		return "pr_open"
+	case set["agent:blocked"]:
+		return "blocked"
+	case set["agent:claimed"]:
+		if closedSet[issueNum] {
+			// Zombie claim on a GH-closed issue — ignore; let tombstone /
+			// SyncClosed resolve to done.
+			return ""
 		}
+		return "claimed"
 	}
 	return ""
 }
