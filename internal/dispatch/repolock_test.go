@@ -1,0 +1,220 @@
+package dispatch
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// runGitIn is a tiny helper that runs `git <args...>` in dir and fails the
+// test on error (tests only). Named with the `In` suffix to avoid collision
+// with runGit in copilot_cli_adapter_silentloss_test.go.
+func runGitIn(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v in %s failed: %v\n%s", args, dir, err, string(out))
+	}
+}
+
+// newBareOriginAndRepo creates a bare "origin" repo plus a local clone with
+// one commit on main, ready for `git worktree add -b <branch> origin/main`.
+// Returns the path to the local clone.
+func newBareOriginAndRepo(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+
+	bare := filepath.Join(root, "origin.git")
+	runGitIn(t, root, "init", "--bare", "-b", "main", bare)
+
+	// Seed: local clone, commit, push main so `origin/main` resolves.
+	seed := filepath.Join(root, "seed")
+	runGitIn(t, root, "clone", bare, seed)
+	runGitIn(t, seed, "config", "user.email", "hopper@test")
+	runGitIn(t, seed, "config", "user.name", "hopper")
+	if err := os.WriteFile(filepath.Join(seed, "README.md"), []byte("seed\n"), 0o644); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	runGitIn(t, seed, "add", ".")
+	runGitIn(t, seed, "commit", "-m", "seed")
+	// Some git versions default to master on init; ensure branch is main.
+	runGitIn(t, seed, "branch", "-M", "main")
+	runGitIn(t, seed, "push", "-u", "origin", "main")
+
+	// The "repo" under test is a fresh clone that carries origin/main.
+	repo := filepath.Join(root, "repo")
+	runGitIn(t, root, "clone", bare, repo)
+	return repo
+}
+
+// TestRepoLockFiveGoroutinesWorktreeAdd is the core race test for hopper's
+// slice (thread item #2). Five goroutines contend on the same repoPath,
+// each running the exact serialized prelude the adapters use:
+//
+//	repoLock -> git worktree add ... -> release
+//
+// Without the flock, parallel `git worktree add -b` calls occasionally exit
+// 255 with "could not lock config file .git/config: File exists" (the
+// ganglia-sr hourly silent-loss signature). With the flock, all 5 must
+// succeed.
+func TestRepoLockFiveGoroutinesWorktreeAdd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping race test in short mode")
+	}
+	repo := newBareOriginAndRepo(t)
+	worktreeRoot := filepath.Join(t.TempDir(), "worktrees")
+	if err := os.MkdirAll(worktreeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir worktree root: %v", err)
+	}
+
+	const n = 5
+	var (
+		wg       sync.WaitGroup
+		fails    atomic.Int32
+		failMsgs = make(chan string, n)
+	)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			branch := "hopper-race-" + string(rune('a'+i))
+			wtPath := filepath.Join(worktreeRoot, branch)
+
+			release, err := repoLock(repo)
+			if err != nil {
+				fails.Add(1)
+				failMsgs <- "repoLock: " + err.Error()
+				return
+			}
+			cmd := exec.Command("git", "worktree", "add", wtPath, "-b", branch, "origin/main")
+			cmd.Dir = repo
+			out, err := cmd.CombinedOutput()
+			release()
+			if err != nil {
+				fails.Add(1)
+				failMsgs <- "git worktree add: " + err.Error() + ": " + string(out)
+				return
+			}
+			if _, statErr := os.Stat(wtPath); statErr != nil {
+				fails.Add(1)
+				failMsgs <- "worktree missing: " + statErr.Error()
+			}
+		}()
+	}
+	wg.Wait()
+	close(failMsgs)
+
+	if got := fails.Load(); got != 0 {
+		for msg := range failMsgs {
+			t.Errorf("worktree add failure: %s", msg)
+		}
+		t.Fatalf("expected 0 failures across %d goroutines, got %d", n, got)
+	}
+}
+
+// TestRepoLockSerializesSameRepo asserts two concurrent repoLock holders
+// against the same repo do not overlap — a light invariant check that
+// doesn't depend on git. If flock is doing its job, the total elapsed
+// time is roughly hold * 2 (no overlap); if it isn't, it's ~hold.
+func TestRepoLockSerializesSameRepo(t *testing.T) {
+	tmp := t.TempDir()
+	// Fake a .git dir so repoLock has somewhere to put its sidecar.
+	if err := os.MkdirAll(filepath.Join(tmp, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+
+	const hold = 50 * time.Millisecond
+	var wg sync.WaitGroup
+	start := time.Now()
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rel, err := repoLock(tmp)
+			if err != nil {
+				t.Errorf("repoLock: %v", err)
+				return
+			}
+			time.Sleep(hold)
+			rel()
+		}()
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+	if elapsed < 2*hold-10*time.Millisecond {
+		t.Fatalf("repoLock did not serialize: elapsed=%v (want >= ~%v)", elapsed, 2*hold)
+	}
+}
+
+// TestRepoLockStaleConfigLockRemoved asserts that a >60s old
+// `.git/config.lock` is cleared after repoLock returns — the opportunistic
+// stale-lock removal that lets us recover from a crashed prior run.
+func TestRepoLockStaleConfigLockRemoved(t *testing.T) {
+	tmp := t.TempDir()
+	gitDir := filepath.Join(tmp, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	configLock := filepath.Join(gitDir, "config.lock")
+	if err := os.WriteFile(configLock, []byte("stale"), 0o644); err != nil {
+		t.Fatalf("seed stale config.lock: %v", err)
+	}
+	// Backdate >60s.
+	old := time.Now().Add(-2 * time.Minute)
+	if err := os.Chtimes(configLock, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	rel, err := repoLock(tmp)
+	if err != nil {
+		t.Fatalf("repoLock: %v", err)
+	}
+	defer rel()
+
+	if _, err := os.Stat(configLock); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected stale config.lock removed; stat err=%v", err)
+	}
+}
+
+// TestRepoLockFreshConfigLockKept asserts we do NOT clobber a recent
+// `.git/config.lock` (<60s old) — some concurrent git process may be
+// legitimately using it.
+func TestRepoLockFreshConfigLockKept(t *testing.T) {
+	tmp := t.TempDir()
+	gitDir := filepath.Join(tmp, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	configLock := filepath.Join(gitDir, "config.lock")
+	if err := os.WriteFile(configLock, []byte("fresh"), 0o644); err != nil {
+		t.Fatalf("seed fresh config.lock: %v", err)
+	}
+
+	rel, err := repoLock(tmp)
+	if err != nil {
+		t.Fatalf("repoLock: %v", err)
+	}
+	defer rel()
+
+	if _, err := os.Stat(configLock); err != nil {
+		t.Fatalf("fresh config.lock unexpectedly removed: %v", err)
+	}
+}
+
+// TestErrWorktreeRaceIsDefined pins the exported sentinel so downstream
+// code (sentinel telemetry) can match on it via errors.Is.
+func TestErrWorktreeRaceIsDefined(t *testing.T) {
+	if ErrWorktreeRace == nil {
+		t.Fatal("ErrWorktreeRace must be a non-nil sentinel")
+	}
+	if ErrWorktreeRace.Error() == "" {
+		t.Fatal("ErrWorktreeRace.Error() must be non-empty")
+	}
+}
