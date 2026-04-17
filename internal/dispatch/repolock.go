@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -45,7 +46,12 @@ const staleConfigLockTTL = 60 * time.Second
 // the canonical "previous run crashed" footprint that would otherwise
 // still block us even with our own serialization in place.
 func repoLock(repoPath string) (release func(), err error) {
-	gitDir := filepath.Join(repoPath, ".git")
+	cleanRepo, err := sanitizeRepoPath(repoPath)
+	if err != nil {
+		return nil, err
+	}
+
+	gitDir := filepath.Join(cleanRepo, ".git")
 	if err := os.MkdirAll(gitDir, 0o755); err != nil {
 		return nil, fmt.Errorf("repoLock: ensure .git dir: %w", err)
 	}
@@ -76,7 +82,8 @@ func repoLock(repoPath string) (release func(), err error) {
 // removeStaleConfigLock deletes `<gitDir>/config.lock` if it is older than
 // staleConfigLockTTL. Best-effort; errors are swallowed because the caller
 // is about to try `git worktree add` anyway — git will surface any real
-// problem.
+// problem. gitDir is trusted — it is `<sanitized repoPath>/.git`, built
+// from the sanitizeRepoPath output, so no additional path validation here.
 func removeStaleConfigLock(gitDir string) {
 	configLock := filepath.Join(gitDir, "config.lock")
 	info, err := os.Stat(configLock)
@@ -87,4 +94,35 @@ func removeStaleConfigLock(gitDir string) {
 		return
 	}
 	_ = os.Remove(configLock)
+}
+
+// sanitizeRepoPath normalizes and validates a repo path before it is used
+// to derive filesystem paths inside the lock/stale-lock helpers. Adapter
+// config is an internal surface, not end-user input, but this explicit
+// sanitizer (a) keeps the trust boundary visible and (b) satisfies static
+// analyzers that track filesystem taint.
+//
+// Requirements:
+//   - non-empty
+//   - cleaned (no duplicate separators, no trailing `.`/`..`)
+//   - absolute (rejects accidental relative paths that could hit the cwd)
+//   - no `..` segments surviving Clean (belt-and-braces against traversal)
+//   - no NUL bytes (some filesystems silently truncate)
+func sanitizeRepoPath(p string) (string, error) {
+	if p == "" {
+		return "", fmt.Errorf("repoLock: empty repoPath")
+	}
+	if strings.ContainsRune(p, 0) {
+		return "", fmt.Errorf("repoLock: repoPath contains NUL byte")
+	}
+	cleaned := filepath.Clean(p)
+	if !filepath.IsAbs(cleaned) {
+		return "", fmt.Errorf("repoLock: repoPath must be absolute, got %q", p)
+	}
+	for _, seg := range strings.Split(cleaned, string(filepath.Separator)) {
+		if seg == ".." {
+			return "", fmt.Errorf("repoLock: repoPath contains traversal segment: %q", p)
+		}
+	}
+	return cleaned, nil
 }

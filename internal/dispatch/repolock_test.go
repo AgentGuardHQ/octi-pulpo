@@ -208,6 +208,49 @@ func TestRepoLockFreshConfigLockKept(t *testing.T) {
 	}
 }
 
+// TestSanitizeRepoPath rejects the inputs a caller must never pass while
+// accepting a normal absolute workspace path. Paired with the dispatch
+// adapters' call sites: repoPath flows from internal adapter config, but
+// the sanitizer pins the contract so a future caller can't regress it.
+func TestSanitizeRepoPath(t *testing.T) {
+	tmp := t.TempDir() // guaranteed absolute, clean
+
+	cases := []struct {
+		name    string
+		in      string
+		wantErr bool
+	}{
+		{"clean absolute", tmp, false},
+		{"redundant slashes", tmp + "/./", false},
+		// filepath.Clean resolves `..` inside an absolute path, so a traversal
+		// like "<tmp>/../etc" normalizes to "/etc" and does NOT leave a
+		// surviving `..` segment. Covered here as the accept case so we pin
+		// the Clean behavior — the traversal guard is belt-and-braces for
+		// exotic filesystems where Clean may not collapse.
+		{"clean collapses traversal", tmp + "/sub/../other", false},
+		{"empty", "", true},
+		{"relative", "relative/path", true},
+		{"nul byte", tmp + "\x00/bad", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := sanitizeRepoPath(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("want error for %q, got %q", tc.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for %q: %v", tc.in, err)
+			}
+			if !filepath.IsAbs(got) {
+				t.Fatalf("sanitized path not absolute: %q", got)
+			}
+		})
+	}
+}
+
 // TestErrWorktreeRaceIsDefined pins the exported sentinel so downstream
 // code (sentinel telemetry) can match on it via errors.Is.
 func TestErrWorktreeRaceIsDefined(t *testing.T) {
